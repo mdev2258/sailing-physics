@@ -281,7 +281,7 @@ function frame(now: number) {
   sim.env.wind.at(top[0], top[1], top[2], sim.t, air);
   const ab = [0, 0, 0];
   b.toBodyDir([air[0] - b.vel.x, 0, air[2] - b.vel.z], ab);
-  boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]));
+  boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]), p.controls.bridleLengthM);
   for (const m of marks) m.position.y = sim.env.waves.elevation(m.position.x, m.position.z, sim.t) + 0.35;
   track.visible = view.showTrack;
   if (!view.paused) addTrack();

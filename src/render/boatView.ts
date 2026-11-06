@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { HULL, hullPoint, keelY, sheerY } from '../physics/hull';
-import { RIG, mastPoint, type Boat, type SailRuntime } from '../physics/boat';
+import { BRIDLE, RIG, bridleRise, mastPoint, type Boat, type SailRuntime } from '../physics/boat';
 import { DEG, clamp } from '../physics/math';
 
 const L = HULL.L;
@@ -163,18 +163,33 @@ export class BoatView {
   private wire: THREE.Line;
   private burgee: THREE.Mesh;
   private rakeKey = NaN;
+  private bridle!: THREE.Line;
+  private sheet!: THREE.Line;
+  private block!: THREE.Mesh;
 
   constructor() {
     const hull = new THREE.Mesh(hullGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, side: THREE.DoubleSide }));
     hull.castShadow = true;
     this.root.add(hull);
-    // wings / racks
-    const wingMat = new THREE.MeshStandardMaterial({ color: 0x9aa3ad, metalness: 0.5, roughness: 0.4 });
+    // cockpit: centre console (mainsheet ratchet + daggerboard case) and two toe straps, as on the real boat
+    const floorY = (x: number) => sheerY(x / L) - 0.12;
+    const console_ = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.1, 0.24), new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.5 }));
+    console_.position.set(1.75, floorY(1.75) + 0.05, 0);
+    const ratchet = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.08, 12), new THREE.MeshStandardMaterial({ color: 0x1b1b1b }));
+    ratchet.position.set(1.55, floorY(1.55) + 0.14, 0);
+    this.root.add(console_, ratchet);
+    const strapMat = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.9 });
     for (const sd of [-1, 1]) {
-      const w = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.03, 0.16), wingMat);
-      w.position.set(1.75, sheerY(1.75 / L) + 0.02, sd * 0.94);
-      this.root.add(w);
+      const strap = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.02, 0.09), strapMat);
+      strap.position.set(1.35, floorY(1.35) + 0.035, sd * 0.32);
+      this.root.add(strap);
     }
+    // mainsheet bridle + the sheet from the block to the boom end
+    const lineMat = new THREE.LineBasicMaterial({ color: 0x2b4c8c });
+    this.bridle = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 17 }, () => new THREE.Vector3())), lineMat);
+    this.sheet = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]), new THREE.LineBasicMaterial({ color: 0x9a1f1f }));
+    this.block = new THREE.Mesh(new THREE.SphereGeometry(0.035, 10, 8), new THREE.MeshStandardMaterial({ color: 0x111111 }));
+    this.root.add(this.bridle, this.sheet, this.block);
     this.mast = spar(0.035, 0xc9ced3);
     this.boom = spar(0.035, 0xc9ced3);
     this.sprit = spar(0.025, 0x2a2a2a);
@@ -198,7 +213,27 @@ export class BoatView {
     this.root.add(this.burgee);
   }
 
-  update(b: Boat, t: number, apparentBody: THREE.Vector3) {
+  /** Bridle hangs as a V between the transom eyes; the block sits on it under the boom end. */
+  private updateBridle(boomEnd: THREE.Vector3, lengthM: number) {
+    const w = BRIDLE.halfSpan, y0 = sheerY(0) + 0.03, x = BRIDLE.x;
+    const rise = bridleRise(lengthM);
+    const a = Math.max(lengthM, 2 * w) / 2;
+    // block slides along the bridle (an ellipse with the eyes as foci) towards the boom end
+    const bz = clamp(boomEnd.z, -w * 0.95, w * 0.95);
+    const by = y0 + rise * Math.sqrt(Math.max(0, 1 - (bz * bz) / (a * a)));
+    const blk = new THREE.Vector3(x, by, bz);
+    this.block.position.copy(blk);
+    const eyeP = new THREE.Vector3(x, y0, -w), eyeS = new THREE.Vector3(x, y0, w);
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 16; i++) {
+      const f = i / 16;
+      pts.push(f <= 0.5 ? eyeP.clone().lerp(blk, f * 2) : blk.clone().lerp(eyeS, (f - 0.5) * 2));
+    }
+    (this.bridle.geometry as THREE.BufferGeometry).setFromPoints(pts);
+    (this.sheet.geometry as THREE.BufferGeometry).setFromPoints([blk, boomEnd]);
+  }
+
+  update(b: Boat, t: number, apparentBody: THREE.Vector3, bridleLengthM = 1) {
     this.root.position.copy(b.origin);
     this.root.quaternion.copy(b.q);
     const rake = b.setup.mastRakeDeg;
@@ -209,7 +244,9 @@ export class BoatView {
     // boom along the main foot
     const foot = b.main.section(0);
     const gp = new THREE.Vector3(...foot.p);
-    placeSpar(this.boom, gp, gp.clone().addScaledVector(new THREE.Vector3(...foot.c), foot.chord * 1.03));
+    const boomEnd = gp.clone().addScaledVector(new THREE.Vector3(...foot.c), foot.chord * 1.03);
+    placeSpar(this.boom, gp, boomEnd);
+    this.updateBridle(boomEnd, bridleLengthM);
     // sprit extends with the hoist
     const bowP = new THREE.Vector3(L - 0.05, sheerY(0.99) + 0.05, 0);
     placeSpar(this.sprit, bowP, bowP.clone().add(new THREE.Vector3((RIG.spritLength + 0.05) * Math.max(b.genHoist, 0.02), 0.02, 0)));

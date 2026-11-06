@@ -21,6 +21,14 @@ export const RIG = {
 };
 const MAST_DECK_Y = deckAt(RIG.mastX);
 
+/** Mainsheet bridle: a rope between two transom eyes; the lower mainsheet block runs on it. */
+export const BRIDLE = { x: 0.08, halfSpan: 0.45, minLength: 0.92, maxLength: 1.6 };
+/** How high the block sits above the eyes when it's in the middle of the bridle (m). */
+export function bridleRise(lengthM: number): number {
+  const a = Math.max(lengthM, 2 * BRIDLE.halfSpan) / 2;
+  return Math.sqrt(a * a - BRIDLE.halfSpan * BRIDLE.halfSpan);
+}
+
 /** Residuary (wave-making) resistance / weight vs Froude number — light planing dinghy. */
 const RESID_TABLE: ReadonlyArray<readonly [number, number]> = [
   [0, 0], [0.2, 0.003], [0.3, 0.01], [0.35, 0.018], [0.4, 0.03], [0.45, 0.05], [0.5, 0.072], [0.55, 0.09],
@@ -707,29 +715,58 @@ export class Boat {
     this.tel = this.telemetry(env, t, forces, { wetted, vSub, planingLift, grounded, fn });
   }
 
-  /** Sail shape from the string controls: depth, twist, luff tolerance, sheet limit. */
-  private updateSailShapes(c: ControlParams) {
+  /**
+   * Sail shape from the control lines: depth (camber), twist, luff tolerance and how far in the
+   * sheet can bring each sail. Public so tests (and curious people) can poke at it directly.
+   */
+  updateSailShapes(c: ControlParams) {
+    const ctl = (x: number) => clamp(x, 0, 1);
+    const kicker = ctl(c.kicker), downhaul = ctl(c.downhaul), outhaul = ctl(c.outhaul);
+    const forestay = ctl(c.forestayTension), barber = ctl(c.barberHauler);
+
+    // --- Main ---
     const m = this.main;
-    const sheetTension = smoothstep(0.6, 1.0, c.mainsheet);
-    const leech = Math.max(clamp(c.kicker, 0, 1), sheetTension);
-    m.twistDeg = 3 + 20 * (1 - leech) + 4 * c.cunningham;
-    m.luffTol = (7 - 3 * c.cunningham) * DEG;
-    m.strips.forEach((s, i) => {
-      m.depths[i] = clamp(0.15 - 0.06 * c.outhaul * (1 - s.u) - 0.03 * c.cunningham - 0.025 * c.kicker * s.u, 0.04, 0.2);
+    const sheetPull = smoothstep(0.55, 1.0, c.mainsheet); // how hard the sheet is on
+    const rise = bridleRise(c.bridleLengthM);
+    // A long bridle lifts the block, so the sheet pulls the boom in more than down: less leech tension.
+    const sheetLeech = sheetPull * clamp(1.15 - 1.4 * rise, 0.35, 1);
+    // The kicker holds the leech at any boom angle; the two add (they pull on the same boom).
+    const leech = 1 - (1 - sheetLeech) * (1 - kicker);
+    // Mast bend: kicker shoves the gooseneck forward (more when sheeted), rig tension pre-bends.
+    const bend = clamp(0.35 * kicker + 0.35 * kicker * sheetPull + 0.3 * forestay, 0, 1);
+    m.twistDeg = 3 + 22 * (1 - leech) + 5 * downhaul + 3 * bend;
+    // Downhaul pulls the draft forward: a rounder entry keeps working at lower angles (wider groove).
+    m.luffTol = (7 - 3 * downhaul) * DEG;
+    m.strips.forEach((st, i) => {
+      const u = st.u;
+      m.depths[i] = clamp(
+        0.16
+          - 0.07 * outhaul * Math.max(0, 1 - u / 0.65) // outhaul: foot, fading out by ~⅔ height
+          - 0.025 * downhaul // downhaul: flattens the whole luff
+          - 0.04 * bend * Math.pow(u, 0.7), // bend: flattens the middle and top
+        0.04, 0.2);
     });
-    m.sheetLimit = lerp(m.def.sheetRange[0], m.def.sheetRange[1], clamp(c.mainsheet, 0, 1)) * DEG;
+    // A tight, short bridle is a straight line: the block slides to leeward and the boom can't centre.
+    const minBoom = 2 + 10 * Math.exp(-rise / 0.07);
+    m.sheetLimit = lerp(m.def.sheetRange[0], minBoom, ctl(c.mainsheet)) * DEG;
 
+    // --- Jib ---
     const j = this.jib;
-    j.twistDeg = 5 + 12 * (1 - c.jibSheet);
-    j.luffTol = 6 * DEG;
-    j.depths.fill(0.12);
-    j.sheetLimit = lerp(j.def.sheetRange[0], j.def.sheetRange[1], clamp(c.jibSheet, 0, 1)) * DEG;
+    // Forestay tension sets sag: slack = fuller, forgiving entry; tight = flat, narrow groove, points higher.
+    j.depths.fill(0.155 - 0.055 * forestay);
+    j.luffTol = (4 + 4 * forestay) * DEG;
+    // Barber hauler pulls the lead in and down: tighter sheeting angle and a firmer leech.
+    const js = ctl(c.jibSheet);
+    j.twistDeg = Math.max(2, 6 + 14 * (1 - js) * (1 - 0.5 * barber) - 3 * barber * js);
+    const minJib = lerp(13, 8, barber);
+    j.sheetLimit = lerp(j.def.sheetRange[0], minJib, js) * DEG;
 
+    // --- Gennaker ---
     const g = this.gennaker;
     g.twistDeg = 8 + 12 * (1 - c.gennakerSheet);
     g.luffTol = 8 * DEG;
     g.depths.fill(0.17);
-    g.sheetLimit = lerp(g.def.sheetRange[0], g.def.sheetRange[1], clamp(c.gennakerSheet, 0, 1)) * DEG;
+    g.sheetLimit = lerp(g.def.sheetRange[0], g.def.sheetRange[1], ctl(c.gennakerSheet)) * DEG;
   }
 
   telemetry(env: Environment, t: number, forces: Telemetry['forces'],

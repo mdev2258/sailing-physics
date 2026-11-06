@@ -54,7 +54,10 @@ export interface ControlParams {
   gennakerHoisted: boolean;
   gennakerSheet: number;
   kicker: number; // vang 0..1
-  cunningham: number; // 0..1
+  downhaul: number; // luff downhaul (cunningham) 0..1
+  barberHauler: number; // jib barber hauler: 0 off … 1 lead pulled fully in & down
+  bridleLengthM: number; // mainsheet bridle length (m): short = block low, long = block high
+  forestayTension: number; // rig / forestay tension 0 slack … 1 bar tight
   outhaul: number; // 0..1
   boardDown: number; // daggerboard 0 = fully up … 1 = fully down
   helmFwd: number; // metres fore(+)/aft(−) of the normal helming spot
@@ -101,7 +104,7 @@ export function defaultParams(): SimParams {
     tide: { rangeM: 4.0, chartDepthM: 1.0, hoursFromHW: -1, periodH: 12.42, maxStreamKn: 1.2, floodToDeg: 350, advanceWithSim: true },
     controls: {
       rudderDeg: 0, mainsheet: 0.85, jibSheet: 0.85, gennakerHoisted: false, gennakerSheet: 0.5,
-      kicker: 0.5, cunningham: 0.2, outhaul: 0.5, boardDown: 1,
+      kicker: 0.5, downhaul: 0.2, outhaul: 0.5, barberHauler: 0.3, bridleLengthM: 1.0, forestayTension: 0.5, boardDown: 1,
       helmFwd: 0, helmOut: 0.5, crewFwd: 0, crewOut: 0.5, side: 'auto',
       autoHike: true, heelTargetDeg: 3, autoTrim: false, autopilot: false, autopilotHeadingDeg: 0,
     },

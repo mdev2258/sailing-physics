@@ -176,3 +176,71 @@ describe('robustness', () => {
     }
   });
 });
+
+describe('control lines', () => {
+  const shape = (mod: (c: SimParams['controls']) => void) => {
+    const p = defaultParams();
+    mod(p.controls);
+    const sim = new Simulation(p);
+    sim.boat.updateSailShapes(p.controls);
+    const m = sim.boat.main, j = sim.boat.jib;
+    return { mainTwist: m.twistDeg, footDepth: m.depths[0], topDepth: m.depths[5], mainLimit: m.sheetLimit, jibDepth: j.depths[0], jibTwist: j.twistDeg, jibLimit: j.sheetLimit, jibLuffTol: j.luffTol, mainLuffTol: m.luffTol };
+  };
+  it('kicker holds the leech when the mainsheet is eased', () => {
+    const off = shape((c) => { c.mainsheet = 0.4; c.kicker = 0; });
+    const on = shape((c) => { c.mainsheet = 0.4; c.kicker = 1; });
+    expect(on.mainTwist).toBeLessThan(off.mainTwist - 10);
+  });
+  it('kicker bends the mast and flattens the top', () => {
+    const off = shape((c) => { c.kicker = 0; c.mainsheet = 1; });
+    const on = shape((c) => { c.kicker = 1; c.mainsheet = 1; });
+    expect(on.topDepth).toBeLessThan(off.topDepth);
+  });
+  it('outhaul flattens the foot much more than the head', () => {
+    const off = shape((c) => { c.outhaul = 0; });
+    const on = shape((c) => { c.outhaul = 1; });
+    expect(off.footDepth - on.footDepth).toBeGreaterThan(0.04);
+    expect(off.topDepth - on.topDepth).toBeLessThan(0.005);
+  });
+  it('downhaul flattens, opens the top and widens the groove', () => {
+    const off = shape((c) => { c.downhaul = 0; });
+    const on = shape((c) => { c.downhaul = 1; });
+    expect(on.footDepth).toBeLessThan(off.footDepth);
+    expect(on.mainTwist).toBeGreaterThan(off.mainTwist);
+    expect(on.mainLuffTol).toBeLessThan(off.mainLuffTol);
+  });
+  it('barber hauler brings the jib lead in and firms the leech', () => {
+    const off = shape((c) => { c.barberHauler = 0; c.jibSheet = 1; });
+    const on = shape((c) => { c.barberHauler = 1; c.jibSheet = 1; });
+    expect(on.jibLimit).toBeLessThan(off.jibLimit);
+    expect(on.jibTwist).toBeLessThan(off.jibTwist);
+  });
+  it('short bridle: less twist two-blocked, but the boom can\'t reach the centreline', () => {
+    const short = shape((c) => { c.bridleLengthM = 0.93; c.mainsheet = 1; c.kicker = 0; });
+    const long = shape((c) => { c.bridleLengthM = 1.5; c.mainsheet = 1; c.kicker = 0; });
+    expect(short.mainTwist).toBeLessThan(long.mainTwist);
+    expect(short.mainLimit).toBeGreaterThan(long.mainLimit);
+  });
+  it('forestay tension flattens the jib and narrows its groove', () => {
+    const slack = shape((c) => { c.forestayTension = 0; });
+    const tight = shape((c) => { c.forestayTension = 1; });
+    expect(tight.jibDepth).toBeLessThan(slack.jibDepth);
+    expect(tight.jibLuffTol).toBeGreaterThan(slack.jibLuffTol);
+  });
+  it('de-powering with the lines reduces heel in a blow', () => {
+    const run = (flat: boolean) => {
+      const p = calm((p) => {
+        p.wind.speedKn = 17; p.controls.autopilot = true; p.controls.autoHike = false;
+        p.controls.crewOut = 1; p.controls.helmOut = 1; p.controls.mainsheet = 0.95; p.controls.jibSheet = 0.95;
+        Object.assign(p.controls, flat
+          ? { kicker: 1, downhaul: 1, outhaul: 1, forestayTension: 1 }
+          : { kicker: 0, downhaul: 0, outhaul: 0, forestayTension: 0 });
+      });
+      const sim = sail(p, 50, 10);
+      let heel = 0;
+      for (let i = 0; i < 20; i++) { sim.run(0.5); heel += -sim.boat.tel.heelDeg * sim.boat.side; }
+      return heel / 20;
+    };
+    expect(run(true)).toBeLessThan(run(false));
+  });
+});

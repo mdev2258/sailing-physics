@@ -21,6 +21,7 @@ export class Hud {
       ['vmg', 'VMG to wind'], ['heel', 'Heel'], ['pitch', 'Pitch'], ['lee', 'Leeway'],
       ['tws', 'True wind'], ['twa', 'True wind angle'], ['aws', 'Apparent wind'], ['fn', 'Froude no.'],
       ['tide', 'Tide'], ['stream', 'Stream'], ['sea', 'Sea state'], ['rho', 'ρ air / water'],
+      ['main', 'Main shape'], ['jib', 'Jib shape'],
       ['disp', 'Displacement'], ['wet', 'Wetted area'], ['time', 'Sim time'],
     ];
     this.el.innerHTML = `<div class="big"><span id="hud-stw">–</span><small>kn</small></div><div class="grid"></div><div class="trim"></div><div class="badges"></div>`;
@@ -59,6 +60,9 @@ export class Hud {
     set('stream', `${fmt(Math.abs(td.streamMs) / 0.514444, 2)} kn ${td.streamMs >= 0 ? 'flood' : 'ebb'}`);
     set('sea', `Hs ${fmt(env.waves.hs, 2)} m · Tp ${fmt(env.waves.tp)} s`);
     set('rho', `${fmt(env.rhoAir, 3)} / ${fmt(env.rhoWater, 0)} kg/m³`);
+    const m = b.main, j = b.jib;
+    set('main', `depth ${Math.round(m.depths[1] * 100)}/${Math.round(m.depths[4] * 100)}% · twist ${Math.round(m.twistDeg)}° · sheet stops ${Math.round(m.sheetLimit / DEG)}°`);
+    set('jib', `depth ${Math.round(j.depths[0] * 100)}% · twist ${Math.round(j.twistDeg)}° · lead ${Math.round(j.sheetLimit / DEG)}°`);
     set('disp', `${fmt(t.dispKg, 0)} kg (lift ${fmt(t.planingLift, 0)} N)`);
     set('wet', `${fmt(t.wettedM2, 2)} m²`);
     const mm = Math.floor(sim.t / 60), ss = Math.floor(sim.t % 60);

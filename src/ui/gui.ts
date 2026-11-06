@@ -1,5 +1,6 @@
 import GUI from 'lil-gui';
 import type { SimParams } from '../physics/params';
+import { BRIDLE } from '../physics/boat';
 
 export interface ViewOptions {
   paused: boolean;
@@ -90,10 +91,16 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   L(sails.add(c, 'jibSheet', 0, 1, 0.01).name('Jib sheet  Q/A'));
   (sails.add(c, 'gennakerHoisted').name('Gennaker hoisted (G)')).listen();
   L(sails.add(c, 'gennakerSheet', 0, 1, 0.01).name('Gennaker sheet  E/D'));
-  L(sails.add(c, 'kicker', 0, 1, 0.01).name('Kicker / vang'));
-  L(sails.add(c, 'cunningham', 0, 1, 0.01).name('Cunningham'));
-  L(sails.add(c, 'outhaul', 0, 1, 0.01).name('Outhaul'));
   (sails.add(c, 'autoTrim').name('Auto-trim sheets')).listen();
+
+  // Led to both side decks on the real boat; 0 = fully eased … 1 = bar tight.
+  const lines = gui.addFolder('Control lines');
+  L(lines.add(c, 'downhaul', 0, 1, 0.01).name('Downhaul (cunningham)'));
+  L(lines.add(c, 'kicker', 0, 1, 0.01).name('Kicker'));
+  L(lines.add(c, 'outhaul', 0, 1, 0.01).name('Outhaul'));
+  L(lines.add(c, 'barberHauler', 0, 1, 0.01).name('Jib barber hauler (in & down)'));
+  L(lines.add(c, 'bridleLengthM', BRIDLE.minLength, BRIDLE.maxLength, 0.01).name('Mainsheet bridle length (m)'));
+  L(lines.add(c, 'forestayTension', 0, 1, 0.01).name('Forestay / rig tension'));
 
   const crew = gui.addFolder('Crew');
   L(crew.add(c, 'helmOut', -0.5, 1, 0.01).name('Helm out (0.5 side, 1 hike)'));

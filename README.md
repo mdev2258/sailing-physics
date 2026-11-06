@@ -34,14 +34,23 @@ post-stall flat-plate behaviour to 180°, induced drag, loss of lift near the su
 
 **Sails.** Main, jib and gennaker, each split into horizontal strips that see their own apparent wind
 (wind gradient, gusts, boat roll/pitch/yaw rates, heel geometry). Each sail swings freely about its luff and is
-held only by its sheet (a one-sided rope), so they flog, weathervane, back and gybe on their own. Strings change the shape:
-- **Kicker**: leech tension, so twist
-- **Outhaul**: depth low down
-- **Cunningham**: depth and luff tolerance (draft forward)
-- **Mast rake**: centre of effort, so helm balance
-
+held only by its sheet (a one-sided rope), so they flog, weathervane, back and gybe on their own.
 Backwinded soft sails at small angles flog rather than make lift. With the kite up, the jib is blanketed and the
 main sits in downwash.
+
+**Control lines** (led to both side decks, as on the real boat). Each one changes the sail shape
+(depth, twist, groove width, how far in the sheet can bring the sail), and the forces follow from that:
+
+| Line | Effect |
+|---|---|
+| Downhaul | flattens the luff, pulls the draft forward (wider groove), opens the top leech |
+| Kicker | holds the leech down at any boom angle, so it controls twist when the main is eased; bends the mast, which flattens the top |
+| Outhaul | flattens the foot, fading out by about ⅔ height |
+| Jib barber hauler | pulls the lead in and down: tighter sheeting angle, firmer jib leech |
+| Mainsheet bridle length | short = block low, sheet pulls down (tight leech) but the boom slides to leeward and can't centre; long = block high, boom centres but the leech twists |
+| Forestay / rig tension | less forestay sag (flatter jib, narrower groove, points higher), plus some mast pre-bend |
+
+The HUD shows the resulting main and jib depth, twist and sheet stop so you can see what each line did.
 
 **Crew.** Helm and crew positions fore/aft and athwartships (leeward → centre → side deck → full hike / flat on
 the wire). They move at finite speed, swap sides through tacks and gybes, and their mass and windage are real.
