@@ -73,6 +73,21 @@ the wire). They move at finite speed, swap sides through tacks and gybes, and th
 and kite when overpowered, throws the boom across in a gybe), autopilot. They only move the same controls you would;
 no forces are faked. Turn them off and sail it yourself.
 
+## Instruments
+
+- **Points-of-sail dial** (north-up): RYA zones round the true wind, the boat at its heading with the boom on
+  its real side, a dashed course-over-ground line (shows tide and leeway), plus point of sail, tack, TWA and AWA.
+  The wind defaults to coming from true north, so the north-up top camera reads like the classic diagram.
+- **Centres** (K):
+  - **CE**: where the total sail force acts.
+  - **CLR**: where the sideways water force acts, from the hull, board and rudder plus the Munk couple,
+    averaged over about a second.
+  - **G** (boat + crew) and **B** (centroid of displaced water). Lines through G (weight, down) and B
+    (buoyancy, up) show the righting couple, and the gap between them is **GZ**.
+  - **M**: the transverse metacentre, shown once heeled more than 4°.
+  - **HUD lead figures:** "CE ahead of CLR" is the live lead, near zero when the boat is balanced because the
+    rudder makes up the rest. "Design" is the geometric lead from sail-area and underwater-area centroids.
+
 ## Controls
 
 | Key | Action |
@@ -86,6 +101,7 @@ no forces are faked. Turn them off and sail it yourself.
 | R | right a capsized boat |
 | F | force arrows (sails, board, rudder, buoyancy, gravity, hull) |
 | V | flow over the sails: green flowing, amber luffing, red stalled |
+| K | the boat's centres: CE, CLR, G, B, M and the GZ righting lever |
 | C | orbit / chase / top camera |
 | Space | pause · **1–5** time scale |
 

@@ -6,13 +6,16 @@ import { DEG, clamp, towards, wrap360 } from './physics/math';
 import { Water } from './render/water';
 import { BoatView } from './render/boatView';
 import { FlowView } from './render/flowView';
+import { CentresView } from './render/centresView';
+import { PointOfSailDial } from './ui/pointOfSail';
+import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { buildGui, type ViewOptions } from './ui/gui';
 import { Hud } from './ui/hud';
 import './style.css';
 
 const sim = new Simulation();
 const p = sim.params;
-const view: ViewOptions = { paused: false, timeScale: 1, camera: 'orbit', showForces: false, showFlow: true, showTrack: true, forceScaleN: 500 };
+const view: ViewOptions = { paused: false, timeScale: 1, camera: 'orbit', showForces: false, showFlow: true, showCentres: true, showTrack: true, forceScaleN: 500 };
 
 // ---------- renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -21,6 +24,10 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.55;
 document.getElementById('app')!.appendChild(renderer.domElement);
+const labels = new CSS2DRenderer();
+labels.setSize(window.innerWidth, window.innerHeight);
+labels.domElement.id = 'labels';
+document.getElementById('app')!.appendChild(labels.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 6000);
@@ -44,6 +51,8 @@ const boatView = new BoatView();
 scene.add(boatView.root);
 const flowView = new FlowView();
 scene.add(flowView.group);
+const centresView = new CentresView();
+scene.add(centresView.group);
 
 // Environment map from the sky, so the hull and sails pick up sky light.
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -180,10 +189,11 @@ const actions = {
 };
 buildGui(p, view, actions);
 const hud = new Hud(document.body);
+const dial = new PointOfSailDial(document.body);
 const help = document.createElement('div');
 help.id = 'help';
 help.innerHTML = `<b>Keys</b> ←/→ rudder · W/S main · Q/A jib · E/D kite · G hoist kite · B/N board up/down · Z/X crew out/in ·
-  H auto-hike · P autopilot · T tack/gybe (autopilot) · R right boat · F forces · V flow · C camera · Space pause · 1–5 time scale`;
+  H auto-hike · P autopilot · T tack/gybe (autopilot) · R right boat · F forces · V flow · K centres · C camera · Space pause · 1–5 time scale`;
 document.body.appendChild(help);
 
 // ---------- keyboard ----------
@@ -208,6 +218,7 @@ window.addEventListener('keydown', (e) => {
     case 'KeyR': sim.rightBoat(); break;
     case 'KeyF': view.showForces = !view.showForces; break;
     case 'KeyV': view.showFlow = !view.showFlow; break;
+    case 'KeyK': view.showCentres = !view.showCentres; break;
     case 'KeyC': view.camera = view.camera === 'orbit' ? 'chase' : view.camera === 'chase' ? 'top' : 'orbit'; break;
     case 'Digit1': view.timeScale = 0.25; break;
     case 'Digit2': view.timeScale = 0.5; break;
@@ -248,6 +259,9 @@ function updateCamera(dt: number) {
   const delta = cg.clone().sub(lastCg);
   lastCg.copy(cg);
   if (delta.length() > 50) delta.set(0, 0, 0); // reset jump
+  // top view is north-up, like a chart; the others keep y up
+  camera.up.set(0, 1, 0);
+  if (view.camera === 'top') camera.up.set(0, 0, -1);
   if (view.camera === 'orbit') {
     controls.enabled = true;
     camera.position.add(delta);
@@ -258,7 +272,7 @@ function updateCamera(dt: number) {
     const f = towards(sim.boat.tel.headingDeg);
     const want = view.camera === 'chase'
       ? new THREE.Vector3(cg.x - f.x * 11, cg.y + 4.5, cg.z - f.z * 11)
-      : new THREE.Vector3(cg.x + 0.01, cg.y + 45, cg.z);
+      : new THREE.Vector3(cg.x, cg.y + 45, cg.z + 0.01);
     camera.position.lerp(want, Math.min(1, dt * 3));
     camera.position.add(delta);
     controls.target.copy(cg);
@@ -287,6 +301,7 @@ function frame(now: number) {
   b.toBodyDir([air[0] - b.vel.x, 0, air[2] - b.vel.z], ab);
   boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]), p.controls.bridleLengthM);
   flowView.update(b, sim.t, view.paused ? 0 : dt * view.timeScale, view.showFlow);
+  centresView.update(b, dt, view.showCentres);
   for (const m of marks) m.position.y = sim.env.waves.elevation(m.position.x, m.position.z, sim.t) + 0.35;
   track.visible = view.showTrack;
   if (!view.paused) addTrack();
@@ -294,8 +309,9 @@ function frame(now: number) {
   updateRain(view.paused ? 0 : dt);
   updateCamera(dt);
   hudT += dt;
-  if (hudT > 0.1) { hudT = 0; hud.update(sim, view.timeScale, view.paused); }
+  if (hudT > 0.1) { hudT = 0; hud.update(sim, view.timeScale, view.paused); dial.update(sim); }
   renderer.render(scene, camera);
+  labels.render(scene, camera);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -304,6 +320,7 @@ window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  labels.setSize(window.innerWidth, window.innerHeight);
 });
 
 // handy for poking at the physics from the browser console

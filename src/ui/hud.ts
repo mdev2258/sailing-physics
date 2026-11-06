@@ -22,6 +22,7 @@ export class Hud {
       ['tws', 'True wind'], ['twa', 'True wind angle'], ['aws', 'Apparent wind'], ['fn', 'Froude no.'],
       ['tide', 'Tide'], ['stream', 'Stream'], ['sea', 'Sea state'], ['rho', 'ρ air / water'],
       ['main', 'Main shape'], ['jib', 'Jib shape'],
+      ['lead', 'CE ahead of CLR'], ['gz', 'Righting lever GZ'],
       ['disp', 'Displacement'], ['wet', 'Wetted area'], ['time', 'Sim time'],
     ];
     this.el.innerHTML = `<div class="big"><span id="hud-stw">–</span><small>kn</small></div><div class="grid"></div><div class="trim"></div><div class="badges"></div>`;
@@ -63,6 +64,11 @@ export class Hud {
     const m = b.main, j = b.jib;
     set('main', `depth ${Math.round(m.depths[1] * 100)}/${Math.round(m.depths[4] * 100)}% · twist ${Math.round(m.twistDeg)}° · sheet stops ${Math.round(m.sheetLimit / DEG)}°`);
     set('jib', `depth ${Math.round(j.depths[0] * 100)}% · twist ${Math.round(j.twistDeg)}° · lead ${Math.round(j.sheetLimit / DEG)}°`);
+    const cn = t.centres;
+    if (cn) {
+      set('lead', `${cn.ce && cn.clr ? `${fmt(cn.leadM, 2)} m` : '–'} (design ${fmt(cn.geoLeadM, 2)} m)`);
+      set('gz', `${fmt(cn.gzM, 2)} m · RM ${fmt(cn.rightingNm / 1000, 2)} kN·m`);
+    }
     set('disp', `${fmt(t.dispKg, 0)} kg (lift ${fmt(t.planingLift, 0)} N)`);
     set('wet', `${fmt(t.wettedM2, 2)} m²`);
     const mm = Math.floor(sim.t / 60), ss = Math.floor(sim.t % 60);

@@ -8,6 +8,7 @@ export interface ViewOptions {
   camera: 'orbit' | 'chase' | 'top';
   showForces: boolean;
   showFlow: boolean;
+  showCentres: boolean;
   showTrack: boolean;
   forceScaleN: number;
 }
@@ -29,6 +30,7 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   sim.add(view, 'camera', ['orbit', 'chase', 'top']).name('Camera (C)').listen();
   sim.add(view, 'showForces').name('Show forces (F)').listen();
   sim.add(view, 'showFlow').name('Show flow over sails (V)').listen();
+  sim.add(view, 'showCentres').name('Show centres CE/CLR/G/B/M (K)').listen();
   sim.add(view, 'forceScaleN', 50, 1000, 10).name('Force arrow N per m');
   sim.add(view, 'showTrack').name('Show ground track');
   const start = { twa: 50 };

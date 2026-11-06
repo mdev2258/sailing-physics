@@ -92,14 +92,15 @@ export interface SimParams {
   setup: BoatSetup;
 }
 
-/** Defaults: a pleasant 12 kt sou'westerly in Chichester Harbour an hour before HW. */
+/** Defaults: a pleasant 12 kt northerly in Chichester Harbour an hour before HW. */
 export function defaultParams(): SimParams {
   return {
-    wind: { speedKn: 12, fromDeg: 225, gustiness: 0.25, gustScaleM: 80, shiftAmpDeg: 6, shiftPeriodS: 90, gradientExp: 1 / 7 },
+    // Wind from true north by default, steady in direction, so north-up views read like a points-of-sail diagram.
+    wind: { speedKn: 12, fromDeg: 0, gustiness: 0.25, gustScaleM: 80, shiftAmpDeg: 0, shiftPeriodS: 90, gradientExp: 1 / 7 },
     weather: { airTempC: 14, pressureHPa: 1013, humidityPct: 75, waterTempC: 13, salinityPSU: 33, rain: 0, fog: 0, cloud: 0.3 },
     waves: {
-      autoFromWind: true, fetchKm: 3, heightM: 0.3, periodS: 2.5, lockToWind: true, fromDeg: 225, spreadDeg: 25,
-      swellHeightM: 0, swellPeriodS: 8, swellFromDeg: 200, seed: 7,
+      autoFromWind: true, fetchKm: 3, heightM: 0.3, periodS: 2.5, lockToWind: true, fromDeg: 0, spreadDeg: 25,
+      swellHeightM: 0, swellPeriodS: 8, swellFromDeg: 340, seed: 7,
     },
     tide: { rangeM: 4.0, chartDepthM: 1.0, hoursFromHW: -1, periodH: 12.42, maxStreamKn: 1.2, floodToDeg: 350, advanceWithSim: true },
     controls: {

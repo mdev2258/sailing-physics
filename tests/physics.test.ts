@@ -4,6 +4,7 @@ import { defaultParams, type SimParams } from '../src/physics/params';
 import { airDensity, tideState, waterDensity } from '../src/physics/environment';
 import { WaveField, fetchLimitedSea, solveK } from '../src/physics/waves';
 import { G, KN, wrap180, wrap360 } from '../src/physics/math';
+import { pointOfSail, tackName } from '../src/physics/pointsOfSail';
 
 /** Calm, steady conditions so each test isolates one effect. */
 function calm(mod: (p: SimParams) => void = () => {}): SimParams {
@@ -242,5 +243,51 @@ describe('control lines', () => {
       return heel / 20;
     };
     expect(run(true)).toBeLessThan(run(false));
+  });
+});
+
+describe('points of sail', () => {
+  it('names follow the RYA wheel', () => {
+    expect(pointOfSail(20, false).name).toBe('No-go zone');
+    expect(pointOfSail(-45, false).name).toBe('Close hauled');
+    expect(pointOfSail(65, false).name).toBe('Close reach');
+    expect(pointOfSail(90, false).name).toBe('Beam reach');
+    expect(pointOfSail(-130, false).name).toBe('Broad reach');
+    expect(pointOfSail(160, false).name).toBe('Training run');
+    expect(pointOfSail(178, false).name).toBe('Run');
+    expect(pointOfSail(170, true).name).toBe('By the lee');
+  });
+  it('tack is named from the side the wind comes over (boom opposite)', () => {
+    expect(tackName(-0.5)).toBe('Starboard tack');
+    expect(tackName(0.5)).toBe('Port tack');
+  });
+  it('wind comes from true north by default', () => {
+    expect(defaultParams().wind.fromDeg).toBe(0);
+  });
+});
+
+describe('centres', () => {
+  it('at rest, G and B line up vertically (GZ ≈ 0) even when the crew heel it', () => {
+    const p = calm((p) => { p.wind.speedKn = 0; p.waves.autoFromWind = false; p.waves.heightM = 0; p.controls.autoHike = false; p.controls.side = 'starboard'; p.controls.crewOut = 0.3; p.controls.helmOut = 0; });
+    const sim = new Simulation(p);
+    sim.reset(0, 0);
+    sim.run(15);
+    const c = sim.boat.centres;
+    expect(sim.boat.tel.heelDeg).toBeGreaterThan(3);
+    expect(Math.abs(c.gzM)).toBeLessThan(0.02);
+    expect(c.meta).not.toBeNull();
+    expect(c.meta![1]).toBeGreaterThan(c.cg[1]); // M above G: stable
+  });
+  it('sailing upwind: crew out gives a real righting lever; CE sits over the CLR when balanced', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; });
+    const sim = sail(p, 45, 30);
+    const c = sim.boat.centres;
+    expect(c.gzM).toBeGreaterThan(0.3);
+    expect(c.rightingNm).toBeGreaterThan(500);
+    expect(c.ce).not.toBeNull();
+    expect(c.clr).not.toBeNull();
+    expect(Math.abs(c.leadM)).toBeLessThan(0.4); // dynamic: balanced → small rudder → CE ≈ over CLR
+    expect(c.geoLeadM).toBeGreaterThan(0); // designer's lead: CE drawn ahead of CLR
+    expect(c.geoLeadM).toBeLessThan(0.8);
   });
 });

@@ -149,12 +149,26 @@ function makeSailDefs(rakeDeg: number): SailDef[] {
 // ---------- Telemetry ----------
 
 export interface ForceArrow { at: V3; f: V3 }
+/** The boat's centres (world frame) plus the stability numbers that come from them. */
+export interface Centres {
+  cg: V3; // centre of gravity (boat + crew)
+  cb: V3; // centre of buoyancy
+  ce: V3 | null; // centre of effort: where the total sail force acts
+  clr: V3 | null; // centre of lateral resistance: where the lateral water force acts (incl. Munk couple)
+  meta: V3 | null; // transverse metacentre (only defined once heeled a few degrees)
+  gzM: number; // righting lever (m), + = trying to bring the boat upright
+  rightingNm: number; // buoyancy × GZ
+  leadM: number; // CE ahead of CLR along the boat (m): + = CE forward → bears away (lee helm)
+  geoLeadM: number; // same, from sail-area and underwater-area centroids (the designer's "lead")
+}
+
 export interface Telemetry {
   headingDeg: number; cogDeg: number; heelDeg: number; pitchDeg: number;
   sogKn: number; stwKn: number; vmgKn: number; leewayDeg: number; fn: number; yawRateDegS: number;
   twsKn: number; twdDeg: number; twaDeg: number; awsKn: number; awaDeg: number;
   draftM: number; wettedM2: number; dispKg: number; planingLift: number;
   grounded: boolean; capsized: boolean;
+  centres?: Centres;
   forces: { sails: ForceArrow; board: ForceArrow; rudder: ForceArrow; buoyancy: ForceArrow; gravity: ForceArrow; hull: ForceArrow };
 }
 
@@ -182,6 +196,9 @@ export class Boat {
   origin = new Vector3();
   tel!: Telemetry;
   private setupKey = '';
+  centres: Centres = { cg: [0, 0, 0], cb: [0, 0, 0], ce: null, clr: null, meta: null, gzM: 0, rightingNm: 0, leadM: 0, geoLeadM: 0 };
+  private clrBody: V3 | null = null;
+  private latFilt: V3 = [0, 0, 0];
   private inertia = new Matrix3();
   private ampSum = 0;
 
@@ -420,6 +437,8 @@ export class Boat {
     // ---- hull skin panels: skin friction + cross-flow pressure drag/damping ----
     let wetted = 0;
     let hullFx = 0, hullFy = 0, hullFz = 0;
+    // lateral (body z) water force and its first moments → dynamic centre of lateral resistance
+    let latF = 0, latX = 0, latY = 0;
     const nb = [0, 0, 0];
     for (const pn of this.panels) {
       this.toWorldPoint([pn.x, pn.y, pn.z], p);
@@ -449,6 +468,7 @@ export class Boat {
         const pr = 0.5 * rhoW * a * vin * vin;
         fb[0] -= pr * nb[0]; fb[1] -= pr * nb[1];
       }
+      latF += fb[2]; latX += fb[2] * pn.x; latY += fb[2] * pn.y;
       this.toWorldDir(fb, fw);
       this.addForce(p[0], p[1], p[2], fw[0], fw[1], fw[2]);
       hullFx += fw[0]; hullFy += fw[1]; hullFz += fw[2];
@@ -497,6 +517,7 @@ export class Boat {
         this.toBodyDir(tmp, vb);
         vb[2] += downwash * vSway; // sits in the board's downwash: sees less of the leeway
         stripForce(vb, [0, 1, 0], chordDir, 0.5 * rhoW * chord * ds * immersion, (a, o) => foilCoeffs(a, spec, o), this.cf, fb);
+        latF += fb[2]; latX += fb[2] * xs; latY += fb[2] * (yTop - (i + 0.5) * ds);
         this.toWorldDir(fb, fw);
         this.addForce(p[0], p[1], p[2], fw[0], fw[1], fw[2]);
         sx += fw[0]; sy += fw[1]; sz += fw[2];
@@ -691,7 +712,8 @@ export class Boat {
     this.toBodyDir(T, tb);
     // Munk moment: a hull sliding sideways wants to turn broadside to the flow — with leeway this
     // turns the bow to windward (a real source of weather helm). Viscous effects cut it ~20%.
-    tb[1] += 0.8 * (0.4 * mDisp - 0.05 * mDisp) * u * vSway;
+    const munk = 0.8 * (0.4 * mDisp - 0.05 * mDisp) * u * vSway;
+    tb[1] += munk;
     const I = this.inertia;
     const dB = RIG.board.x - this.cgBody.x, dR = RIG.rudder.x - this.cgBody.x;
     const zB = this.cgBody.y - (bTop - bSpan / 2);
@@ -716,7 +738,62 @@ export class Boat {
     this.toWorldDir([this.cgBody.x, this.cgBody.y, this.cgBody.z], o);
     this.origin.set(this.pos.x - o[0], this.pos.y - o[1], this.pos.z - o[2]);
 
+    this.centresUpdate(dt, cb, bF, forces.sails, latF, latX, latY, munk, bSpan);
     this.tel = this.telemetry(env, t, forces, { wetted, vSub, planingLift, grounded, fn });
+    this.tel.centres = this.centres;
+  }
+
+  private centresUpdate(dt: number, cb: V3, buoy: number, sails: ForceArrow, latF: number, latX: number, latY: number, munk: number, bSpan: number) {
+    const R = this.R;
+    const c = this.centres;
+    c.cg = [this.pos.x, this.pos.y, this.pos.z];
+    c.cb = cb;
+    const body = (w: ArrayLike<number>): V3 => {
+      const o: V3 = [0, 0, 0];
+      this.toBodyDir([w[0] - this.origin.x, w[1] - this.origin.y, w[2] - this.origin.z], o);
+      return o;
+    };
+    const world = (b: V3): V3 => { const o: V3 = [0, 0, 0]; this.toWorldPoint(b, o); return o; };
+    c.ce = Math.hypot(...sails.f) > 5 ? sails.at : null;
+    // CLR: x where the lateral force would have to act to give the same yaw moment (the Munk couple shifts it)
+    // Average the side force and its moments separately (~1 s), then divide: in waves the
+    // instantaneous force is sometimes nearly a pure couple, with no meaningful point of action.
+    const k = Math.min(1, dt / 1.0);
+    const f = this.latFilt;
+    f[0] += (latF - f[0]) * k; f[1] += (latX - munk - f[1]) * k; f[2] += (latY - f[2]) * k;
+    this.clrBody = Math.abs(f[0]) > 60 ? [clamp(f[1] / f[0], -0.3, L), clamp(f[2] / f[0], -1.2, 0.3), 0] : null;
+    c.clr = this.clrBody ? world(this.clrBody) : null;
+    // GZ: horizontal gap between the weight acting down through G and buoyancy acting up through B,
+    // measured athwartships; positive when it rights the boat.
+    const zx = R[2], zz = R[8];
+    const zl = Math.hypot(zx, zz) || 1;
+    const heel = Math.asin(clamp(-R[5], -1, 1));
+    const gz = ((cb[0] - this.pos.x) * zx + (cb[2] - this.pos.z) * zz) / zl * Math.sign(heel || 1);
+    c.gzM = Math.abs(heel) > 0.5 * DEG ? gz : 0;
+    c.rightingNm = c.gzM * buoy;
+    // Metacentre: where buoyancy's vertical line crosses the boat's centreplane.
+    const ny = R[5];
+    if (Math.abs(heel) > 4 * DEG && Math.abs(heel) < 80 * DEG && buoy > 0) {
+      const nx = R[2], nz = R[8];
+      const s = -(nx * (cb[0] - this.origin.x) + ny * (cb[1] - this.origin.y) + nz * (cb[2] - this.origin.z)) / ny;
+      c.meta = [cb[0], cb[1] + s, cb[2]];
+    } else c.meta = null;
+    // lead along the boat (body x) from the dynamic centres…
+    c.leadM = c.ce && this.clrBody ? body(c.ce)[0] - this.clrBody[0] : 0;
+    // …and the geometric one: sail-area centroid vs underwater lateral-area centroid
+    let aS = 0, xS = 0;
+    for (const sl of this.sails) {
+      const sc = sl.def.name === 'gennaker' ? this.genHoist : 1;
+      for (const st of sl.strips) { const a = st.area * sc; aS += a; xS += a * (st.p[0] - 0.4 * st.chord); }
+    }
+    let aL = 0, xL = 0;
+    for (const cell of this.cells) {
+      const p = world([cell.x, cell.y, cell.z]);
+      if (p[1] < 0) { const a = (2 * cell.hx * 2 * cell.hy) / 5; aL += a; xL += a * cell.x; }
+    }
+    const aB = RIG.board.chord * bSpan, aR = RIG.rudder.chord * RIG.rudder.span;
+    aL += aB + aR; xL += aB * RIG.board.x + aR * RIG.rudder.x;
+    c.geoLeadM = aS > 0 && aL > 0 ? xS / aS - xL / aL : 0;
   }
 
   /**
