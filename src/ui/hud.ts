@@ -31,6 +31,7 @@ export class Hud {
       if (k === 'stw') continue;
       const row = document.createElement('div');
       row.innerHTML = `<span class="l">${label}</span><span class="v" id="hud-${k}">–</span>`;
+      row.dataset.k = k;
       grid.appendChild(row);
       this.cells.set(k, row.querySelector('.v') as HTMLElement);
     }

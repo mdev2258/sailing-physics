@@ -22,7 +22,32 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #c4d2de; fon
 #pos canvas { width: 184px; height: 184px; display: block; margin: 0 auto; }
 #pos .pos-name { font-size: 16px; font-weight: 700; margin-top: 2px; }
 #pos .pos-sub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+#heel { position: fixed; right: 316px; bottom: 318px; width: 200px; background: var(--panel); color: var(--text); border-radius: 10px;
+  padding: 8px; text-align: center; backdrop-filter: blur(6px); box-sizing: border-box; }
+#heel canvas { width: 184px; height: 110px; display: block; margin: 0 auto; }
+#heel .heel-num { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+#heel .heel-sub { font-size: 11px; color: var(--muted); }
+#trimstats { position: fixed; left: 12px; bottom: 64px; width: 300px; max-width: calc(100vw - 24px); box-sizing: border-box; background: var(--panel);
+  color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 12px; backdrop-filter: blur(6px); }
+#trimstats .ts-title { font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+#trimstats .ts-row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+#trimstats .ts-row b { font-size: 15px; }
+#trimstats .ts-bar { height: 6px; background: rgba(255,255,255,0.12); border-radius: 3px; margin: 6px 0 4px; overflow: hidden; }
+#trimstats .ts-bar i { display: block; height: 100%; background: var(--ok); transition: width 0.3s; }
+#trimstats .ts-hint { color: var(--muted); font-size: 11px; }
+/* trim mode: hide navigation, keep what matters for the sails */
+body.trim-mode #pos { display: none; }
+body.trim-mode #heel { bottom: 64px; }
+body.trim-mode #hud [data-k="hdg"], body.trim-mode #hud [data-k="cog"], body.trim-mode #hud [data-k="sog"],
+body.trim-mode #hud [data-k="tide"], body.trim-mode #hud [data-k="stream"], body.trim-mode #hud [data-k="sea"],
+body.trim-mode #hud [data-k="rho"], body.trim-mode #hud [data-k="disp"], body.trim-mode #hud [data-k="wet"],
+body.trim-mode #hud [data-k="time"], body.trim-mode #hud [data-k="lee"], body.trim-mode #hud [data-k="pitch"] { display: none; }
 @media (max-width: 700px) {
+  #heel { right: 152px; bottom: 12px; width: 132px; padding: 6px; }
+  #heel canvas { width: 120px; height: 72px; }
+  #heel .heel-num { font-size: 14px; }
+  body.trim-mode #heel { right: 12px; bottom: 12px; }
+  #trimstats { bottom: 12px; width: auto; right: 156px; }
   #pos { right: 12px; bottom: 12px; width: 132px; padding: 6px; }
   #pos canvas { width: 120px; height: 120px; }
   #pos .pos-name { font-size: 13px; }

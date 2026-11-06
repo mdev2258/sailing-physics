@@ -88,6 +88,14 @@ no forces are faked. Turn them off and sail it yourself.
   - **HUD lead figures:** "CE ahead of CLR" is the live lead, near zero when the boat is balanced because the
     rudder makes up the rest. "Design" is the geometric lead from sail-area and underwater-area centroids.
 
+- **Heel gauge**: clinometer seen from astern, with the hull section tilting, the crew drawn where they are,
+  and your heel target marked. Green is flat, amber is losing drive, red is on the way over.
+- **Sail trim mode (L)**: the boat steers itself at a chosen true wind angle (following any shifts) and the
+  crew hike for you. The camera sits behind the helm looking up the rig, and the panel holds only sails,
+  control lines and point-of-sail presets. A score shows your 2-second-average speed (VMG upwind and downwind)
+  against the best you've managed at that angle and wind, so you can tell whether a change helped.
+  In trim mode ←/→ change the wind angle and T changes tack.
+
 ## Controls
 
 | Key | Action |
@@ -103,6 +111,7 @@ no forces are faked. Turn them off and sail it yourself.
 | V | flow over the sails: green flowing, amber luffing, red stalled |
 | K | the boat's centres: CE, CLR, G, B, M and the GZ righting lever |
 | C | orbit / chase / top camera |
+| L | sail trim mode on/off |
 | Space | pause · **1–5** time scale |
 
 All variables are also in the panel on the right. `window.sim` is exposed in the browser console.

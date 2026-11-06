@@ -5,7 +5,7 @@ import { BRIDLE } from '../physics/boat';
 export interface ViewOptions {
   paused: boolean;
   timeScale: number;
-  camera: 'orbit' | 'chase' | 'top';
+  camera: 'orbit' | 'chase' | 'top' | 'trim';
   showForces: boolean;
   showFlow: boolean;
   showCentres: boolean;
@@ -17,6 +17,7 @@ export interface GuiActions {
   reset: () => void;
   rightBoat: () => void;
   startAt: (twaDeg: number) => void;
+  trimMode: () => void;
 }
 
 /** Every physics variable, grouped like a sailor thinks about them. */
@@ -30,6 +31,7 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   sim.add(view, 'camera', ['orbit', 'chase', 'top']).name('Camera (C)').listen();
   sim.add(view, 'showForces').name('Show forces (F)').listen();
   sim.add(view, 'showFlow').name('Show flow over sails (V)').listen();
+  sim.add({ trim: () => act.trimMode() }, 'trim').name('⛵ Sail trim mode (L)');
   sim.add(view, 'showCentres').name('Show centres CE/CLR/G/B/M (K)').listen();
   sim.add(view, 'forceScaleN', 50, 1000, 10).name('Force arrow N per m');
   sim.add(view, 'showTrack').name('Show ground track');

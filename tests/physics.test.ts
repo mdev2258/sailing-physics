@@ -291,3 +291,17 @@ describe('centres', () => {
     expect(c.geoLeadM).toBeLessThan(0.8);
   });
 });
+
+describe('trim-mode autopilot', () => {
+  it('holds a true wind angle through a wind shift', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autopilotMode = 'twa'; p.controls.autopilotTwaDeg = 90; p.controls.autoTrim = true; });
+    const sim = new Simulation(p);
+    sim.reset(wrap360(p.wind.fromDeg - 90), 3);
+    sim.run(15);
+    expect(Math.abs(sim.boat.tel.twaDeg - 90)).toBeLessThan(8);
+    p.wind.fromDeg = 30; // 30° veer
+    sim.run(20);
+    expect(Math.abs(sim.boat.tel.twaDeg - 90)).toBeLessThan(8);
+    expect(Math.abs(wrap180(sim.boat.tel.headingDeg - 300))).toBeLessThan(10);
+  });
+});

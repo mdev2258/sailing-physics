@@ -8,6 +8,8 @@ import { BoatView } from './render/boatView';
 import { FlowView } from './render/flowView';
 import { CentresView } from './render/centresView';
 import { PointOfSailDial } from './ui/pointOfSail';
+import { HeelGauge } from './ui/heelGauge';
+import { TrimMode } from './ui/trimMode';
 import { CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import { buildGui, type ViewOptions } from './ui/gui';
 import { Hud } from './ui/hud';
@@ -186,14 +188,23 @@ const actions = {
   reset: () => { sim.reset(); clearTrack(); placeMarks(); },
   rightBoat: () => sim.rightBoat(),
   startAt: (twa: number) => { sim.reset(wrap360(p.wind.fromDeg - twa)); clearTrack(); },
+  trimMode: () => trim.toggle(true),
 };
-buildGui(p, view, actions);
+const gui = buildGui(p, view, actions);
 const hud = new Hud(document.body);
 const dial = new PointOfSailDial(document.body);
+const heel = new HeelGauge(document.body);
+let cameraBeforeTrim: ViewOptions['camera'] = 'orbit';
+let centresBeforeTrim = true;
+const trim = new TrimMode(sim, (on) => {
+  document.body.classList.toggle('trim-mode', on);
+  if (on) { gui.hide(); cameraBeforeTrim = view.camera; centresBeforeTrim = view.showCentres; view.camera = 'trim'; view.showFlow = true; view.showCentres = false; }
+  else { gui.show(); view.camera = cameraBeforeTrim; view.showCentres = centresBeforeTrim; }
+});
 const help = document.createElement('div');
 help.id = 'help';
 help.innerHTML = `<b>Keys</b> ←/→ rudder · W/S main · Q/A jib · E/D kite · G hoist kite · B/N board up/down · Z/X crew out/in ·
-  H auto-hike · P autopilot · T tack/gybe (autopilot) · R right boat · F forces · V flow · K centres · C camera · Space pause · 1–5 time scale`;
+  H auto-hike · P autopilot · T tack/gybe (autopilot) · R right boat · F forces · V flow · K centres · L sail trim mode · C camera · Space pause · 1–5 time scale`;
 document.body.appendChild(help);
 
 // ---------- keyboard ----------
@@ -208,7 +219,7 @@ window.addEventListener('keydown', (e) => {
     case 'KeyG': c.gennakerHoisted = !c.gennakerHoisted; break;
     case 'KeyH': c.autoHike = !c.autoHike; break;
     case 'KeyP': c.autopilot = !c.autopilot; if (c.autopilot) c.autopilotHeadingDeg = Math.round(sim.boat.tel.headingDeg); break;
-    case 'KeyT': {
+    case 'KeyT': if (trim.active) { trim.switchTack(); break; } {
       // tack or gybe through the wind onto the mirror-image TWA
       const t = sim.boat.tel;
       c.autopilot = true;
@@ -219,7 +230,11 @@ window.addEventListener('keydown', (e) => {
     case 'KeyF': view.showForces = !view.showForces; break;
     case 'KeyV': view.showFlow = !view.showFlow; break;
     case 'KeyK': view.showCentres = !view.showCentres; break;
-    case 'KeyC': view.camera = view.camera === 'orbit' ? 'chase' : view.camera === 'chase' ? 'top' : 'orbit'; break;
+    case 'KeyC':
+      if (trim.active) view.camera = view.camera === 'trim' ? 'orbit' : 'trim';
+      else view.camera = view.camera === 'orbit' ? 'chase' : view.camera === 'chase' ? 'top' : 'orbit';
+      break;
+    case 'KeyL': trim.toggle(); break;
     case 'Digit1': view.timeScale = 0.25; break;
     case 'Digit2': view.timeScale = 0.5; break;
     case 'Digit3': view.timeScale = 1; break;
@@ -233,7 +248,11 @@ function applyKeys(dt: number) {
   const c = p.controls;
   const ramp = (v: number, up: string, down: string, rate: number, lo = 0, hi = 1) =>
     clamp(v + (held.has(up) ? rate * dt : 0) - (held.has(down) ? rate * dt : 0), lo, hi);
-  if (held.has('ArrowLeft') || held.has('ArrowRight')) {
+  if (trim.active) {
+    // in trim mode the arrows choose the angle to the wind instead of steering
+    if (held.has('ArrowLeft')) trim.nudgeTwa(-20 * dt);
+    if (held.has('ArrowRight')) trim.nudgeTwa(20 * dt);
+  } else if (held.has('ArrowLeft') || held.has('ArrowRight')) {
     keyRudder = true;
     c.autopilot = false;
     c.rudderDeg = ramp(c.rudderDeg, 'ArrowRight', 'ArrowLeft', 60, -35, 35);
@@ -270,6 +289,18 @@ function updateCamera(dt: number) {
   } else {
     controls.enabled = false;
     const f = towards(sim.boat.tel.headingDeg);
+    if (view.camera === 'trim') {
+      // behind the helm on the windward quarter, looking up the sails; turns with the boat but stays level
+      const r = towards(sim.boat.tel.headingDeg + 90);
+      const sd = sim.boat.side;
+      const want = new THREE.Vector3(cg.x - f.x * 8.5 + r.x * sd * 3.2, 4.6, cg.z - f.z * 8.5 + r.z * sd * 3.2);
+      camera.position.lerp(want, Math.min(1, dt * 2.5));
+      camera.position.add(delta);
+      controls.target.set(cg.x + f.x * 1.2 - r.x * sd * 0.6, 3.0, cg.z + f.z * 1.2 - r.z * sd * 0.6);
+      camera.lookAt(controls.target);
+      controls.update();
+      return;
+    }
     const want = view.camera === 'chase'
       ? new THREE.Vector3(cg.x - f.x * 11, cg.y + 4.5, cg.z - f.z * 11)
       : new THREE.Vector3(cg.x, cg.y + 45, cg.z + 0.01);
@@ -302,6 +333,8 @@ function frame(now: number) {
   boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]), p.controls.bridleLengthM);
   flowView.update(b, sim.t, view.paused ? 0 : dt * view.timeScale, view.showFlow);
   centresView.update(b, dt, view.showCentres);
+  heel.update(b, p.controls.heelTargetDeg, dt);
+  trim.update(dt);
   for (const m of marks) m.position.y = sim.env.waves.elevation(m.position.x, m.position.z, sim.t) + 0.35;
   track.visible = view.showTrack;
   if (!view.paused) addTrack();

@@ -71,7 +71,9 @@ export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: 
   }
 
   if (c.autopilot && !tel.capsized) {
-    const e = wrap180(c.autopilotHeadingDeg - tel.headingDeg);
+    // TWA mode steers to an angle off the true wind, following shifts like a helm would
+    const target = c.autopilotMode === 'twa' ? tel.twdDeg - c.autopilotTwaDeg : c.autopilotHeadingDeg;
+    const e = wrap180(target - tel.headingDeg);
     c.rudderDeg = clamp(1.2 * e - 0.8 * tel.yawRateDegS, -30, 30);
   }
 }

@@ -68,8 +68,10 @@ export interface ControlParams {
   autoHike: boolean; // helm + crew hike to hold heelTargetDeg
   heelTargetDeg: number;
   autoTrim: boolean; // sheets trimmed to target angle of attack
-  autopilot: boolean; // hold compass heading
+  autopilot: boolean;
+  autopilotMode: 'heading' | 'twa'; // hold a compass heading, or an angle to the true wind
   autopilotHeadingDeg: number;
+  autopilotTwaDeg: number; // signed: + = wind over starboard (starboard tack)
 }
 
 export interface BoatSetup {
@@ -107,7 +109,7 @@ export function defaultParams(): SimParams {
       rudderDeg: 0, mainsheet: 0.85, jibSheet: 0.85, gennakerHoisted: false, gennakerSheet: 0.5,
       kicker: 0.5, downhaul: 0.2, outhaul: 0.5, barberHauler: 0.3, bridleLengthM: 1.0, forestayTension: 0.5, boardDown: 1,
       helmFwd: 0, helmOut: 0.5, crewFwd: 0, crewOut: 0.5, side: 'auto',
-      autoHike: true, heelTargetDeg: 3, autoTrim: false, autopilot: false, autopilotHeadingDeg: 0,
+      autoHike: true, heelTargetDeg: 3, autoTrim: false, autopilot: false, autopilotMode: 'heading', autopilotHeadingDeg: 0, autopilotTwaDeg: 45,
     },
     setup: {
       // ISO: 100 kg hull, 14.3 m² upwind (main/jib split estimated), 18.8 m² asymmetric.
