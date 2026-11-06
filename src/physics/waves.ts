@@ -134,6 +134,17 @@ export class WaveField {
     this.comps = comps;
   }
 
+  /**
+   * Wave pressure head felt at `depth` metres below the mean surface (Froude–Krylov): each component's
+   * pressure fades as e^(−k·depth), so a hull feels short waves much less than their surface height.
+   */
+  pressureHead(x: number, z: number, t: number, depth: number): number {
+    let eta = 0;
+    const d = Math.max(0, depth);
+    for (const c of this.comps) eta += c.amp * Math.exp(-c.k * d) * Math.cos(c.kx * x + c.kz * z - c.omega * t + c.phase);
+    return eta;
+  }
+
   elevation(x: number, z: number, t: number): number {
     let eta = 0;
     for (const c of this.comps) eta += c.amp * Math.cos(c.kx * x + c.kz * z - c.omega * t + c.phase);

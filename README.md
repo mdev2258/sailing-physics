@@ -31,7 +31,10 @@ and capsize all fall out of the same calculation.
   when it digs in. That's where the pitch stiffness at speed comes from.
 - Munk moment (a hull sliding sideways wants to turn broadside, which gives weather helm).
 - Immersed-transom drag at low speed (the wide transom drags an eddy until it runs dry), which is why weight forward pays in light air.
-- Heave and pitch damping from wave radiation (heave damping ratio about 0.35), so it rides chop instead of bouncing like a cork.
+- Heave and pitch damping from wave radiation (heave damping ratio about 0.35), plus realistic added mass (about 1.6× displacement).
+  Wave pressure is felt at hull depth (Froude–Krylov, fading as e^−kd), not at the surface. Result: in regular head seas the hull
+  slices through chop shorter than itself (heave under 0.1 of the wave at λ ≈ L/2, about 0.3 at λ ≈ 0.8 L) and rides waves
+  much longer than itself (about 1×).
 - The resulting stability curve: draft about 9.5 cm, GM about 0.95 m, GZ peaking at about 0.26 m at 25°, vanishing at about 65°.
 
 **Foils.** Daggerboard (adjustable depth) and rudder in strip theory: finite-aspect-ratio lift slope, stall,

@@ -434,3 +434,29 @@ describe('assists for a friendlier sail', () => {
     }
   });
 });
+
+describe('seakeeping', () => {
+  /** Heave amplitude ÷ wave amplitude, sailing upwind into regular waves of wavelength λ. */
+  function heaveResponse(lambda: number) {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; p.waves.autoFromWind = false; p.waves.heightM = 0; });
+    const sim = new Simulation(p);
+    const hdg = 315;
+    sim.reset(hdg, 4);
+    p.controls.autopilotHeadingDeg = hdg;
+    const amp = Math.min(0.12, lambda / 30);
+    const k = (2 * Math.PI) / lambda;
+    const w = Math.sqrt(G * k * Math.tanh(k * sim.env.waves.depth));
+    const dir = ((hdg + 180) * Math.PI) / 180;
+    const comp = { kx: k * Math.sin(dir), kz: -k * Math.cos(dir), k, omega: w, omegaInt: w, amp, phase: 0, kh: k * sim.env.waves.depth, invSinhKh: 0 };
+    const freeze = () => { sim.env.waves.comps = [comp]; };
+    freeze(); sim.run(12); freeze();
+    let lo = 9, hi = -9;
+    for (let i = 0; i < 300; i++) { sim.step(); if (i % 50 === 0) freeze(); lo = Math.min(lo, sim.boat.pos.y); hi = Math.max(hi, sim.boat.pos.y); }
+    return (hi - lo) / 2 / amp;
+  }
+  it('cuts through chop shorter than the boat, rides waves much longer than it', () => {
+    expect(heaveResponse(2.5)).toBeLessThan(0.2);
+    expect(heaveResponse(4)).toBeLessThan(0.5);
+    expect(heaveResponse(14)).toBeGreaterThan(0.7);
+  });
+});

@@ -20,6 +20,7 @@ export const RIG = {
   spritLength: 1.15,
 };
 const MAST_DECK_Y = deckAt(RIG.mastX);
+const HEAVE_ADDED = 1.6; // heave added mass / displacement
 
 /** Cockpit layout (shared by physics seats and the 3D model), from the real boat. */
 export { COCKPIT }; // defined with the hull so the buoyancy cells can leave the open cockpit out
@@ -444,7 +445,9 @@ export class Boat {
       let eta = 1e9;
       if (p[1] + ext / 2 >= -amp) {
         eta = etaCol[cell.col];
-        if (Number.isNaN(eta)) eta = etaCol[cell.col] = waves.elevation(p[0], p[2], t);
+        // Froude–Krylov: the wave's pressure is felt at the hull's depth, not at the surface.
+        // Column cells are visited bottom-up, so the first one gives the column's depth.
+        if (Number.isNaN(eta)) eta = etaCol[cell.col] = waves.pressureHead(p[0], p[2], t, -0.5 * bottom);
       }
       const frac = clamp((eta - bottom) / ext, 0, 1);
       if (frac <= 0) continue;
@@ -784,7 +787,9 @@ export class Boat {
     const foilAdd = (span: number, chord: number) => rhoW * Math.PI * (chord / 2) ** 2 * span;
     const aBoard = foilAdd(bSpan, RIG.board.chord);
     const aRud = foilAdd(RIG.rudder.span, RIG.rudder.chord);
-    const add = [0.05 * mDisp, 0.8 * mDisp, 0.4 * mDisp + aBoard + aRud];
+    // Added mass: a flat planing hull heaving or pitching has to shove a lot of water with it
+    // (strip theory for flat sections gives several × displacement); 1.6× is on the conservative side.
+    const add = [0.05 * mDisp, HEAVE_ADDED * mDisp, 0.4 * mDisp + aBoard + aRud];
     const fbody = [0, 0, 0];
     this.toBodyDir(F, fbody);
     const ab = [fbody[0] / (this.mass + add[0]), fbody[1] / (this.mass + add[1]), fbody[2] / (this.mass + add[2])];
@@ -806,7 +811,7 @@ export class Boat {
     const e = Ieff.elements; // column-major, symmetric here
     e[0] += 0.15 * mDisp * 0.25 + aBoard * zB * zB + aRud * 0.3 * 0.3;
     e[4] += 0.4 * mDisp * (L / 4) ** 2 * 0.6 + aBoard * dB * dB + aRud * dR * dR;
-    e[8] += 0.8 * mDisp * (L / 4) ** 2 * 0.6;
+    e[8] += HEAVE_ADDED * mDisp * (L / 4) ** 2 * 0.6;
     const Iinv = Ieff.invert();
     const w = this.omega;
     const Iw = w.clone().applyMatrix3(I);
