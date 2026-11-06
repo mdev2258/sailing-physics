@@ -83,6 +83,8 @@ export interface BoatSetup {
   jibAreaM2: number;
   gennakerAreaM2: number;
   mastRakeDeg: number; // aft rake: moves the rig's centre of effort aft → more weather helm
+  wings: boolean; // hiking wings fitted (the ISO sails with or without)
+  wingWidthM: number; // how far each wing sticks out past the gunwale
 }
 
 export interface SimParams {
@@ -114,7 +116,9 @@ export function defaultParams(): SimParams {
     setup: {
       // ISO: 100 kg hull, 14.3 m² upwind (main/jib split estimated), 18.8 m² asymmetric.
       hullMassKg: 100, rigMassKg: 14, helmMassKg: 72, crewMassKg: 65,
-      mainAreaM2: 10.4, jibAreaM2: 3.9, gennakerAreaM2: 18.8, mastRakeDeg: 4,
+      mainAreaM2: 10.4, jibAreaM2: 3.9, gennakerAreaM2: 18.8, mastRakeDeg: 5,
+      // 1.75 m hull, 2.0 m over the wings (published ISO beams)
+      wings: false, wingWidthM: 0.125,
     },
   };
 }

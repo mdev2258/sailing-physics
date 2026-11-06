@@ -5,6 +5,7 @@ import { airDensity, tideState, waterDensity } from '../src/physics/environment'
 import { WaveField, fetchLimitedSea, solveK } from '../src/physics/waves';
 import { G, KN, wrap180, wrap360 } from '../src/physics/math';
 import { pointOfSail, tackName } from '../src/physics/pointsOfSail';
+import { Quaternion, Vector3 } from 'three';
 
 /** Calm, steady conditions so each test isolates one effect. */
 function calm(mod: (p: SimParams) => void = () => {}): SimParams {
@@ -303,5 +304,85 @@ describe('trim-mode autopilot', () => {
     sim.run(20);
     expect(Math.abs(sim.boat.tel.twaDeg - 90)).toBeLessThan(8);
     expect(Math.abs(wrap180(sim.boat.tel.headingDeg - 300))).toBeLessThan(10);
+  });
+});
+
+describe('wings, slot and transom', () => {
+  it('wings move the hiking rail out: more leverage from the same people', () => {
+    const heel = (wings: boolean) => {
+      const p = calm((p) => { p.wind.speedKn = 0; p.waves.autoFromWind = false; p.waves.heightM = 0; p.setup.wings = wings;
+        p.controls.autoHike = false; p.controls.side = 'starboard'; p.controls.helmOut = 0.5; p.controls.crewOut = 0; });
+      const sim = new Simulation(p);
+      sim.reset(0, 0);
+      sim.run(12);
+      return sim.boat.tel.heelDeg;
+    };
+    const off = heel(false), on = heel(true);
+    expect(off).toBeLessThan(40); // a settled heel, not a capsize
+    expect(on).toBeGreaterThan(off + 1);
+  });
+  it('wings pay off in a breeze', () => {
+    const vmg = (wings: boolean) => {
+      const p = calm((p) => { p.wind.speedKn = 20; p.setup.wings = wings; p.controls.autopilot = true; p.controls.autoTrim = true; });
+      const sim = sail(p, 45, 25);
+      let v = 0;
+      for (let i = 0; i < 20; i++) { sim.run(0.5); v += sim.boat.tel.vmgKn; }
+      return v / 20;
+    };
+    expect(vmg(true)).toBeGreaterThan(vmg(false));
+  });
+  it('the jib heads the main (slot effect): the main sees a smaller angle of attack', () => {
+    const alpha = (jibArea: number) => {
+      const p = calm((p) => { p.setup.jibAreaM2 = jibArea; p.controls.autopilot = true; p.controls.mainsheet = 0.95; p.controls.jibSheet = 0.95; });
+      const sim = sail(p, 45, 15);
+      let a = 0;
+      for (let i = 0; i < 10; i++) { sim.run(0.5); a += sim.boat.main.alphaMid; }
+      return a / 10;
+    };
+    expect(alpha(3.9)).toBeLessThan(alpha(1.0));
+  });
+  it('weight aft in light air drags the transom and costs speed', () => {
+    const speed = (aft: boolean) => {
+      const p = calm((p) => { p.wind.speedKn = 5; p.controls.autopilot = true; p.controls.autoTrim = true; p.controls.autoHike = false;
+        p.controls.crewOut = 0; p.controls.helmOut = 0.3; p.controls.crewFwd = aft ? -0.8 : 0.5; p.controls.helmFwd = aft ? -0.8 : 0.3; });
+      const sim = sail(p, 60, 30);
+      let v = 0;
+      for (let i = 0; i < 20; i++) { sim.run(0.5); v += sim.boat.tel.stwKn; }
+      return v / 20;
+    };
+    expect(speed(false)).toBeGreaterThan(speed(true));
+  });
+});
+
+describe('stability curve', () => {
+  /** GZ at a forced heel, with the boat settled at its floating height (crew on the centreline). */
+  function gzCurve(degs: number[]) {
+    const p = calm((p) => { p.wind.speedKn = 0; p.waves.autoFromWind = false; p.waves.heightM = 0; p.controls.autoHike = false; p.controls.helmOut = 0; p.controls.crewOut = 0; });
+    const sim = new Simulation(p);
+    sim.reset(0, 0);
+    sim.run(5);
+    const b = sim.boat as unknown as { q: Quaternion; pos: Vector3; vel: Vector3; omega: Vector3; mass: number; F: number[]; step: (...a: unknown[]) => void; centres: { gzM: number } };
+    const q0 = b.q.clone();
+    const fwd = new Vector3(1, 0, 0).applyQuaternion(q0);
+    const W = b.mass * G;
+    return degs.map((deg) => {
+      let lo = -1, hi = 1;
+      for (let i = 0; i < 40; i++) {
+        const y = (lo + hi) / 2;
+        b.q.copy(new Quaternion().setFromAxisAngle(fwd, (deg * Math.PI) / 180).multiply(q0));
+        b.pos.y = y; b.vel.set(0, 0, 0); b.omega.set(0, 0, 0);
+        b.step(1e-7, 0, sim.env, p.controls);
+        if (b.F[1] + W > W) lo = y; else hi = y; // too much buoyancy → float higher
+      }
+      return b.centres.gzM;
+    });
+  }
+  it('has the classic dinghy shape: stiff at first, peak around 20–30°, vanishing before 80°', () => {
+    const degs = [5, 10, 20, 25, 30, 50, 80];
+    const gz = Object.fromEntries(gzCurve(degs).map((g, i) => [degs[i], g]));
+    expect(gz[5] / Math.sin((5 * Math.PI) / 180)).toBeGreaterThan(0.8); // GM ≳ 0.8 m
+    expect(gz[20]).toBeGreaterThan(gz[5]);
+    expect(Math.max(gz[20], gz[25], gz[30])).toBeGreaterThan(gz[50]);
+    expect(gz[80]).toBeLessThan(0); // past the angle of vanishing stability
   });
 });

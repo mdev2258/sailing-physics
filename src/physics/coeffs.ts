@@ -24,14 +24,15 @@ export function foilCoeffs(a: number, f: FoilSpec, out: Coeffs): Coeffs {
   return out;
 }
 
-export interface SailShape { depth: number; luffTol: number; ar: number; cd0: number }
+export interface SailShape { depth: number; luffTol: number; ar: number; cd0: number; clScale?: number }
 
 /**
  * Soft sail. Depth (camber/chord) sets max lift and the optimum angle; below `luffTol`
  * the luff lifts and the sail flogs (little lift, extra drag).
  */
 export function sailCoeffs(a: number, s: SailShape, out: Coeffs, backed = false): Coeffs {
-  const clMax = 0.9 + 4.5 * s.depth;
+  // clScale < 1 for sails that can't hold their designed shape (an asymmetric kite's free-flying luff)
+  const clMax = (0.9 + 4.5 * s.depth) * (s.clScale ?? 1);
   const aOpt = (12 + 70 * s.depth) * DEG;
   const flap = smoothstep(0, s.luffTol, a);
   const x = Math.min(a / aOpt, 1);

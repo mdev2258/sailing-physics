@@ -1,6 +1,6 @@
 import { Matrix3, Quaternion, Vector3 } from 'three';
 import { DEG, G, bearingOf, clamp, interp, lerp, smoothstep, towards, wrap180 } from './math';
-import { HULL, buildCells, buildPanels, keelY, sheerY, type Cell, type Panel } from './hull';
+import { CELL_GRID, HULL, buildCells, buildPanels, hullPoint, keelY, sheerY, type Cell, type Panel } from './hull';
 import { foilCoeffs, sailCoeffs, stripForce, type Coeffs, type FoilSpec, type SailShape } from './coeffs';
 import type { Environment } from './environment';
 import type { BoatSetup, ControlParams } from './params';
@@ -20,6 +20,13 @@ export const RIG = {
   spritLength: 1.15,
 };
 const MAST_DECK_Y = deckAt(RIG.mastX);
+
+/** Cockpit layout (shared by physics seats and the 3D model), from the real boat. */
+export const COCKPIT = { aftS: 0.04, fwdS: 0.6, sideDeckW: 0.3, floorY: 0.27, strapZ: 0.28 };
+/** Hiking wings: tube frames along the side decks, used with or without. */
+export const WINGS = { x0: 0.95, x1: 2.65, massEachKg: 3.5 };
+/** Half-beam of the gunwale at x (m). */
+export const gunwaleZ = (x: number) => hullPoint(clamp(x / L, 0, 1), 1, 1)[2];
 
 /** Mainsheet bridle: a rope between two transom eyes; the lower mainsheet block runs on it. */
 export const BRIDLE = { x: 0.08, halfSpan: 0.45, minLength: 0.92, maxLength: 1.6 };
@@ -70,6 +77,8 @@ export class SailRuntime {
   depths: number[] = [];
   twistDeg = 0;
   luffTol = 6 * DEG;
+  clMid = 0; // lift coefficient of the middle strip (drives the jib/main slot effect)
+  qMean = 0; // smoothed dynamic pressure on the sail (Pa) — loads the leech in gusts
   sheetLimit = 0;
   submerged = 0;
   constructor(public def: SailDef, public area: number) {
@@ -199,6 +208,7 @@ export class Boat {
   centres: Centres = { cg: [0, 0, 0], cb: [0, 0, 0], ce: null, clr: null, meta: null, gzM: 0, rightingNm: 0, leadM: 0, geoLeadM: 0 };
   private clrBody: V3 | null = null;
   private latFilt: V3 = [0, 0, 0];
+  private etaCol: Float64Array;
   private inertia = new Matrix3();
   private ampSum = 0;
 
@@ -211,6 +221,7 @@ export class Boat {
 
   constructor(public setup: BoatSetup) {
     this.cells = buildCells();
+    this.etaCol = new Float64Array(CELL_GRID.ns * CELL_GRID.nz);
     this.panels = buildPanels();
     const defs = makeSailDefs(setup.mastRakeDeg);
     this.sails = [new SailRuntime(defs[0], setup.mainAreaM2), new SailRuntime(defs[1], setup.jibAreaM2), new SailRuntime(defs[2], setup.gennakerAreaM2)];
@@ -277,6 +288,10 @@ export class Boat {
       { m: s.helmMassKg, p: [this.helm.x, this.helm.y, this.helm.z], k: [0.3, 0.3, 0.3] },
       { m: s.crewMassKg, p: [this.crew.x, this.crew.y, this.crew.z], k: [0.3, 0.3, 0.3] },
     ];
+    if (s.wings) {
+      const xm = (WINGS.x0 + WINGS.x1) / 2;
+      for (const sd of [-1, 1]) items.push({ m: WINGS.massEachKg, p: [xm, deckAt(xm), sd * (gunwaleZ(xm) + s.wingWidthM / 2)], k: [0.1, 0.5, 0.5] });
+    }
     let m = 0, cx = 0, cy = 0, cz = 0;
     for (const it of items) { m += it.m; cx += it.m * it.p[0]; cy += it.m * it.p[1]; cz += it.m * it.p[2]; }
     cx /= m; cy /= m; cz /= m;
@@ -301,16 +316,29 @@ export class Boat {
     this.origin.set(this.pos.x - o[0], this.pos.y - o[1], this.pos.z - o[2]);
   }
 
+  /** Where the hiking rail is at x: the gunwale, or the wing edge with wings on. */
+  railZ(x: number): number {
+    const w = this.setup.wings && x > WINGS.x0 - 0.1 && x < WINGS.x1 + 0.1 ? this.setup.wingWidthM : 0;
+    return gunwaleZ(x) + w;
+  }
+
+  /**
+   * Body-frame CG of each person from the controls. λ: −0.5 to leeward … 0 centreline … 0.5 sitting on
+   * the rail … 1 full hike (helm) / flat on the wire (crew). With wings the rail is further out.
+   */
   private crewTargets(c: ControlParams): { helm: V3; crew: V3 } {
     const s = this.side;
     const seat = (x: number, lam: number, trap: boolean): V3 => {
       const deck = deckAt(x);
+      const rail = this.railZ(x);
+      const sit = rail - 0.08; // hips on the edge
       if (lam <= 0.5) {
         const a = Math.abs(lam) * 2;
-        return [x, deck + 0.28 - 0.15 * (1 - a), s * lam * 2 * 0.98];
+        // on the side deck at the edge, or down on the cockpit floor near the centreline
+        return [x, lerp(COCKPIT.floorY + 0.3, deck + 0.28, smoothstep(0.2, 0.8, a)), s * lam * 2 * sit];
       }
       const h = (lam - 0.5) * 2;
-      return trap ? [x, deck + 0.3 - 0.05 * h, s * (0.98 + 0.95 * h)] : [x, deck + 0.28 - 0.18 * h, s * (0.98 + 0.55 * h)];
+      return trap ? [x, deck + 0.3 - 0.05 * h, s * (sit + 0.95 * h)] : [x, deck + 0.28 - 0.18 * h, s * (sit + 0.55 * h)];
     };
     return {
       helm: seat(clamp(1.45 + c.helmFwd, 0.4, 2.6), clamp(c.helmOut, -0.5, 1), false),
@@ -404,12 +432,19 @@ export class Boat {
 
     // ---- hydrostatics: buoyancy of each volume cell under the local wave surface ----
     let bF = 0, bX = 0, bY = 0, bZ = 0, vSub = 0;
+    // wave height once per vertical column of cells (they share x,z closely), not per cell
+    const etaCol = this.etaCol;
+    etaCol.fill(NaN);
     for (const cell of this.cells) {
       this.toWorldPoint([cell.x, cell.y, cell.z], p);
       const ext = Math.abs(R[3]) * 2 * cell.hx + Math.abs(R[4]) * 2 * cell.hy + Math.abs(R[5]) * 2 * cell.hz;
       const bottom = p[1] - ext / 2;
       if (bottom > amp) continue;
-      const eta = p[1] + ext / 2 < -amp ? 1e9 : waves.elevation(p[0], p[2], t);
+      let eta = 1e9;
+      if (p[1] + ext / 2 >= -amp) {
+        eta = etaCol[cell.col];
+        if (Number.isNaN(eta)) eta = etaCol[cell.col] = waves.elevation(p[0], p[2], t);
+      }
       const frac = clamp((eta - bottom) / ext, 0, 1);
       if (frac <= 0) continue;
       const fy = rhoW * G * cell.vol * frac;
@@ -439,6 +474,7 @@ export class Boat {
     let hullFx = 0, hullFy = 0, hullFz = 0;
     // lateral (body z) water force and its first moments → dynamic centre of lateral resistance
     let latF = 0, latX = 0, latY = 0;
+    let transomA = 0, transomDepth = 0; // immersed transom area and depth
     const nb = [0, 0, 0];
     for (const pn of this.panels) {
       this.toWorldPoint([pn.x, pn.y, pn.z], p);
@@ -449,6 +485,7 @@ export class Boat {
       if (fr <= 0) continue;
       const a = pn.area * fr;
       wetted += a;
+      if (pn.nx < -0.9) { transomA += a; transomDepth = Math.max(transomDepth, eta - (p[1] - half)); }
       this.pointVel(p, v);
       tmp[0] = v[0] - wv[0]; tmp[1] = v[1] - wv[1]; tmp[2] = v[2] - wv[2];
       this.toBodyDir(tmp, vb);
@@ -499,6 +536,18 @@ export class Boat {
         this.addForce(p[0], p[1], p[2], fw[0], fw[1], fw[2]);
       }
     }
+    // Immersed-transom drag: at low speed the water can't leave the wide flat transom cleanly and
+    // drags an eddy behind it; it runs dry above a transom Froude number of ~4.5 (why weight goes
+    // forward in light airs).
+    if (transomA > 0 && u > 0.05) {
+      const fnT = u / Math.sqrt(G * Math.max(transomDepth, 0.005));
+      const ct = 0.25 * clamp(1 - fnT / 4.5, 0, 1);
+      const rt = 0.5 * rhoW * u * u * transomA * ct;
+      this.toWorldPoint([0, 0.08, 0], p);
+      this.toWorldDir([-rt, 0, 0], fw);
+      this.addForce(p[0], p[1], p[2], fw[0], fw[1], fw[2]);
+      hullFx += fw[0]; hullFy += fw[1]; hullFz += fw[2];
+    }
     forces.hull = { at: cb, f: [hullFx, hullFy, hullFz] };
 
     // ---- foils: daggerboard + rudder (strip theory) ----
@@ -546,6 +595,13 @@ export class Boat {
     let sFx = 0, sFy = 0, sFz = 0, sMx = 0, sMy = 0, sMz = 0, sTot = 0;
     const cdir: V3 = [0, 0, 0];
     const ceB = [0, 0, 0], rB = [0, 0, 0], relB = [0, 0, 0], camber = [0, 0, 0];
+    // Jib/main slot: the jib's downwash heads the main (less angle of attack: the main luff backwinds
+    // first), the main's upwash lifts the jib (more angle). Only while both sails are on the same side
+    // and the wind isn't far aft; the kite's blanket takes over when it's up.
+    const sameSide = Math.sign(this.main.angle) === Math.sign(this.jib.angle);
+    const slot = sameSide ? (1 - this.genHoist) * smoothstep(125, 85, Math.abs(this.tel.awaDeg)) : 0;
+    const headMain = 6 * DEG * clamp(this.jib.clMid, 0, 1.6) * 0.6 * slot;
+    const liftJib = 3 * DEG * clamp(this.main.clMid, 0, 1.6) * slot;
     for (const sail of this.sails) {
       const isGen = sail.def.name === 'gennaker';
       // interference: with the kite up the jib sits in its wake and the main in its downwash
@@ -595,14 +651,23 @@ export class Boat {
           tmp[0] = this.air[0] - v[0]; tmp[1] = this.air[1] - v[1]; tmp[2] = this.air[2] - v[2];
           this.toBodyDir(tmp, vb);
           vb[0] -= relB[0]; vb[1] -= relB[1]; vb[2] -= relB[2];
-          const shape: SailShape = { depth: sail.depths[i], luffTol: sail.luffTol, ar: sail.def.name === 'gennaker' ? 3.2 : 5.5, cd0: 0.03 };
+          const kite = sail.def.name === 'gennaker';
+          // kite: max lift ≈1.4, in line with published asymmetric-spinnaker coefficients (ORC VPP)
+          const shape: SailShape = { depth: sail.depths[i], luffTol: sail.luffTol, ar: kite ? 3.2 : 5.5, cd0: kite ? 0.06 : 0.03, clScale: kite ? 0.85 : 1 };
           const fa = [0, 0, 0];
           // camber bulges towards the side the clew has swung to
           cross(sail.axis, cdir, camber);
           const cs = sail.angle >= 0 ? 1 : -1;
           camber[0] *= cs; camber[1] *= cs; camber[2] *= cs;
+          const slotRot = sail === this.main ? -cs * headMain : sail === this.jib ? cs * liftJib : 0;
+          if (slotRot !== 0) rotateAbout([vb[0], vb[1], vb[2]], sail.axis, slotRot, vb as V3);
           sail.flow[i][0] = vb[0]; sail.flow[i][1] = vb[1]; sail.flow[i][2] = vb[2];
           sail.alpha[i] = stripForce(vb, sail.axis, cdir, 0.5 * rhoA * area * (1 - wet), (a, o, bk) => sailCoeffs(a, shape, o, bk), this.cf, fa, camber);
+          if (i === Math.floor(sail.strips.length / 2)) {
+            sail.clMid = this.cf.cl;
+            const q = 0.5 * rhoA * (vb[0] * vb[0] + vb[1] * vb[1] + vb[2] * vb[2]);
+            sail.qMean += (q - sail.qMean) * Math.min(1, dt / 0.4);
+          }
           fb[0] += fa[0]; fb[1] += fa[1]; fb[2] += fa[2];
         }
         // torque about the luff axis drives the sail's swing
@@ -659,6 +724,22 @@ export class Boat {
     windage(0.5 * L, 0.7, 0, 0.5);
     windage(this.helm.x, this.helm.y + 0.2, this.helm.z, 0.3);
     windage(this.crew.x, this.crew.y + 0.2, this.crew.z, 0.35);
+
+    // ---- wings dragging in the water when heeled hard (open tube frames: drag only) ----
+    if (this.setup.wings) {
+      for (const sd of [-1, 1]) for (const xw of [WINGS.x0 + 0.2, (WINGS.x0 + WINGS.x1) / 2, WINGS.x1 - 0.2]) {
+        this.toWorldPoint([xw, deckAt(xw), sd * this.railZ(xw)], p);
+        if (p[1] > amp + 0.05) continue;
+        const eta = env.water(p[0], p[1], p[2], t, wv);
+        const wet = smoothstep(-0.03, 0.08, eta - p[1]);
+        if (wet <= 0) continue;
+        this.pointVel(p, v);
+        const rx = v[0] - wv[0], ry = v[1] - wv[1], rz = v[2] - wv[2];
+        const sp = Math.hypot(rx, ry, rz);
+        const k = -0.5 * rhoW * 0.12 * sp * wet; // ~0.12 m² of tube per section
+        this.addForce(p[0], p[1], p[2], k * rx, k * ry, k * rz);
+      }
+    }
 
     // ---- mast in the water (capsize): buoyancy of the sealed spar + cylinder drag ----
     const mastSeg = RIG.mastHeight / 6;
@@ -789,7 +870,7 @@ export class Boat {
     let aL = 0, xL = 0;
     for (const cell of this.cells) {
       const p = world([cell.x, cell.y, cell.z]);
-      if (p[1] < 0) { const a = (2 * cell.hx * 2 * cell.hy) / 5; aL += a; xL += a * cell.x; }
+      if (p[1] < 0) { const a = (2 * cell.hx * 2 * cell.hy) / CELL_GRID.nz; aL += a; xL += a * cell.x; }
     }
     const aB = RIG.board.chord * bSpan, aR = RIG.rudder.chord * RIG.rudder.span;
     aL += aB + aR; xL += aB * RIG.board.x + aR * RIG.rudder.x;
@@ -815,7 +896,10 @@ export class Boat {
     const leech = 1 - (1 - sheetLeech) * (1 - kicker);
     // Mast bend: kicker shoves the gooseneck forward (more when sheeted), rig tension pre-bends.
     const bend = clamp(0.35 * kicker + 0.35 * kicker * sheetPull + 0.3 * forestay, 0, 1);
-    m.twistDeg = 3 + 22 * (1 - leech) + 5 * downhaul + 3 * bend;
+    // Under load the leech stretches open (cloth, battens, mast tip): sails twist off in gusts and
+    // depower themselves a little; good leech tension resists it. 39 Pa ≈ 16 kn apparent.
+    const gustTwist = Math.min(12, 8 * (m.qMean / 39) * (1 - 0.6 * leech));
+    m.twistDeg = 3 + 22 * (1 - leech) + 5 * downhaul + 3 * bend + gustTwist;
     // Downhaul pulls the draft forward: a rounder entry keeps working at lower angles (wider groove).
     m.luffTol = (7 - 3 * downhaul) * DEG;
     m.strips.forEach((st, i) => {
@@ -838,7 +922,8 @@ export class Boat {
     j.luffTol = (4 + 4 * forestay) * DEG;
     // Barber hauler pulls the lead in and down: tighter sheeting angle and a firmer leech.
     const js = ctl(c.jibSheet);
-    j.twistDeg = Math.max(2, 6 + 14 * (1 - js) * (1 - 0.5 * barber) - 3 * barber * js);
+    j.twistDeg = Math.max(2, 6 + 14 * (1 - js) * (1 - 0.5 * barber) - 3 * barber * js)
+      + Math.min(8, 4 * (j.qMean / 39) * (1 - 0.5 * forestay));
     const minJib = lerp(13, 8, barber);
     j.sheetLimit = lerp(j.def.sheetRange[0], minJib, js) * DEG;
 

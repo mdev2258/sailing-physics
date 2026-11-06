@@ -58,11 +58,14 @@ export function hullPoint(s: number, t: number, side: number, L = HULL.L, B = HU
   return [s * L, y, side * hb];
 }
 
-export interface Cell { x: number; y: number; z: number; vol: number; hx: number; hy: number; hz: number }
+export interface Cell { x: number; y: number; z: number; vol: number; hx: number; hy: number; hz: number; col: number }
+
+/** Buoyancy grid resolution. Fine across the boat: the righting moment comes from a thin wedge at the bilge. */
+export const CELL_GRID = { ns: 20, nv: 5, nz: 10 };
 export interface Panel { x: number; y: number; z: number; nx: number; ny: number; nz: number; area: number; size: number }
 
 /** Volume cells filling the (sealed, self-draining) hull — used for buoyancy at any attitude. */
-export function buildCells(ns = 20, nv = 4, nz = 5, L = HULL.L, B = HULL.B): Cell[] {
+export function buildCells(ns = CELL_GRID.ns, nv = CELL_GRID.nv, nz = CELL_GRID.nz, L = HULL.L, B = HULL.B): Cell[] {
   const cells: Cell[] = [];
   const dx = L / ns;
   for (let i = 0; i < ns; i++) {
@@ -76,7 +79,7 @@ export function buildCells(ns = 20, nv = 4, nz = 5, L = HULL.L, B = HULL.B): Cel
       if (hb <= 1e-4) continue;
       const dz = (2 * hb) / nz;
       for (let k = 0; k < nz; k++) {
-        cells.push({ x: s * L, y, z: -hb + (k + 0.5) * dz, vol: dx * dy * dz, hx: dx / 2, hy: dy / 2, hz: dz / 2 });
+        cells.push({ x: s * L, y, z: -hb + (k + 0.5) * dz, vol: dx * dy * dz, hx: dx / 2, hy: dy / 2, hz: dz / 2, col: i * nz + k });
       }
     }
   }
