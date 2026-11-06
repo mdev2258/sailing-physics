@@ -79,6 +79,18 @@ hard. In the sim wings cost a little speed below about 12 kn and pay off above a
 and kite when overpowered, throws the boom across in a gybe), autopilot. They only move the same controls you would;
 no forces are faked. Turn them off and sail it yourself.
 
+## How much help? (M)
+
+The physics is the same on every level; only the virtual crew's jobs change.
+
+| Level | Steering | Sheets | Hiking | Extras |
+|---|---|---|---|---|
+| **Easy** (default) | ←/→ turn the boat at a steady rate and it holds the course | auto-trimmed | auto | won't pinch into irons (hold into the wind to tack), auto-right after a capsize |
+| **Normal** | same as Easy | you (W/S, Q/A, E/D) | auto | auto-right |
+| **Realistic** | ←/→ move the tiller | you | you (Z/X) | none, press R to right it |
+
+T tacks or gybes on any level. Touching a sheet key switches auto-trim off, and the level shows as "Custom".
+
 ## Instruments
 
 - **Points-of-sail dial** (north-up): RYA zones round the true wind, the boat at its heading with the boom on

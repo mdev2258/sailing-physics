@@ -38,6 +38,12 @@ export class Simulation {
   step() {
     if (this.steps % 20 === 0) this.env.update(this.params, this.t, this.boat.pos.x, this.boat.pos.z);
     applyAssists(this.boat, this.assist, this.params.controls, this.dt);
+    // auto-right: after a few seconds in the water, the crew have it back up
+    const c = this.params.controls;
+    if (c.autoRight && this.boat.tel.capsized) {
+      this.assist.capsizedFor += this.dt;
+      if (this.assist.capsizedFor > 4) { this.rightBoat(); this.assist.capsizedFor = 0; }
+    } else this.assist.capsizedFor = 0;
     this.boat.step(this.dt, this.t, this.env, this.params.controls);
     this.t += this.dt;
     this.steps++;

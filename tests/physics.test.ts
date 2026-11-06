@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Simulation } from '../src/physics/sim';
-import { defaultParams, type SimParams } from '../src/physics/params';
+import { applyAssistLevel, defaultParams, type SimParams } from '../src/physics/params';
+import { requestTack } from '../src/physics/assist';
 import { airDensity, tideState, waterDensity } from '../src/physics/environment';
 import { WaveField, fetchLimitedSea, solveK } from '../src/physics/waves';
 import { G, KN, wrap180, wrap360 } from '../src/physics/math';
@@ -384,5 +385,52 @@ describe('stability curve', () => {
     expect(gz[20]).toBeGreaterThan(gz[5]);
     expect(Math.max(gz[20], gz[25], gz[30])).toBeGreaterThan(gz[50]);
     expect(gz[80]).toBeLessThan(0); // past the angle of vanishing stability
+  });
+});
+
+describe('assists for a friendlier sail', () => {
+  const easy = (mod: (p: SimParams) => void = () => {}) => { const p = defaultParams(); applyAssistLevel(p.controls, 'easy'); mod(p); return p; };
+  it('no-go guard: aiming straight at the wind holds you close hauled, still moving', () => {
+    const p = easy();
+    const sim = new Simulation(p);
+    sim.reset(300, 3);
+    p.controls.autopilot = true; p.controls.autopilotMode = 'heading'; p.controls.autopilotHeadingDeg = p.wind.fromDeg;
+    sim.run(20);
+    expect(Math.abs(sim.boat.tel.twaDeg)).toBeGreaterThan(35);
+    expect(sim.boat.tel.stwKn).toBeGreaterThan(3);
+  });
+  it('an assisted tack comes out on the other tack with way on', () => {
+    const p = easy();
+    const sim = new Simulation(p);
+    sim.reset(wrap360(p.wind.fromDeg - 45), 4);
+    p.controls.autopilot = true; p.controls.autopilotMode = 'heading'; p.controls.autopilotHeadingDeg = wrap360(p.wind.fromDeg - 45);
+    sim.run(10);
+    const before = Math.sign(sim.boat.tel.twaDeg);
+    requestTack(sim.boat, sim.assist, p.controls);
+    sim.run(15);
+    expect(Math.sign(sim.boat.tel.twaDeg)).toBe(-before);
+    expect(sim.boat.tel.stwKn).toBeGreaterThan(3);
+  });
+  it('auto-right puts a capsized boat back up', () => {
+    const p = easy((p) => { p.wind.speedKn = 22; p.controls.autoTrim = false; p.controls.autoHike = false; p.controls.crewOut = 0; p.controls.helmOut = 0; p.controls.mainsheet = 1; p.controls.jibSheet = 1; });
+    const sim = new Simulation(p);
+    sim.reset(wrap360(p.wind.fromDeg - 90), 3);
+    let wentOver = false;
+    for (let i = 0; i < 60 && !wentOver; i++) { sim.run(0.5); wentOver = sim.boat.tel.capsized; }
+    expect(wentOver).toBe(true);
+    // it gets put back up (with the sheets still pinned in 22 kn it may well go straight back over — fair)
+    let minHeel = 90;
+    for (let i = 0; i < 70; i++) { sim.run(0.1); minHeel = Math.min(minHeel, Math.abs(sim.boat.tel.heelDeg)); }
+    expect(minHeel).toBeLessThan(15);
+  });
+  it('easy mode stays upright sailing every angle in a gusty 18 kn', () => {
+    for (const twa of [45, 90, 135]) {
+      const p = easy((p) => { p.wind.speedKn = 18; p.wind.gustiness = 0.4; });
+      const sim = new Simulation(p);
+      const h = wrap360(p.wind.fromDeg - twa);
+      sim.reset(h, 3);
+      p.controls.autopilot = true; p.controls.autopilotMode = 'heading'; p.controls.autopilotHeadingDeg = h;
+      for (let i = 0; i < 60; i++) { sim.run(0.5); expect(sim.boat.tel.capsized).toBe(false); }
+    }
   });
 });

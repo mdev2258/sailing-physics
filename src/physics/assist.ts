@@ -13,10 +13,12 @@ export interface AssistState {
   depower: number; // smoothed proportional ease when overpowered
   hadTrim: boolean;
   gybing: number; // seconds left of "grab the falls and throw the boom across"
+  tacking: number; // seconds left of an assisted tack/gybe (the no-go guard stands aside)
+  capsizedFor: number; // seconds spent capsized (for auto-right)
 }
 
 export function newAssistState(): AssistState {
-  return { hikeI: 0, trim: [0.85, 0.85, 0.5], depower: 0, hadTrim: false, gybing: 0 };
+  return { hikeI: 0, trim: [0.85, 0.85, 0.5], depower: 0, hadTrim: false, gybing: 0, tacking: 0, capsizedFor: 0 };
 }
 
 export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: number) {
@@ -70,10 +72,33 @@ export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: 
     c.helmFwd = aft * 0.8;
   }
 
+  // No-go guard: don't let the course be set inside ~40° of the wind (pinching into irons) unless tacking.
+  st.tacking = Math.max(0, st.tacking - dt);
+  if (c.noGoGuard && c.autopilot && c.autopilotMode === 'heading' && st.tacking <= 0) {
+    const twaT = wrap180(tel.twdDeg - c.autopilotHeadingDeg);
+    if (Math.abs(twaT) < NO_GO_DEG) {
+      const sd = Math.sign(tel.twaDeg) || 1;
+      c.autopilotHeadingDeg = ((tel.twdDeg - sd * NO_GO_DEG) % 360 + 360) % 360;
+    }
+  }
+
   if (c.autopilot && !tel.capsized) {
     // TWA mode steers to an angle off the true wind, following shifts like a helm would
     const target = c.autopilotMode === 'twa' ? tel.twdDeg - c.autopilotTwaDeg : c.autopilotHeadingDeg;
     const e = wrap180(target - tel.headingDeg);
     c.rudderDeg = clamp(1.2 * e - 0.8 * tel.yawRateDegS, -30, 30);
   }
+}
+
+/** Closest the no-go guard lets you point (true wind angle, degrees). */
+export const NO_GO_DEG = 40;
+
+/** Tack (or gybe) onto the mirror-image wind angle; the autopilot steers it, the guard stands aside. */
+export function requestTack(boat: Boat, st: AssistState, c: ControlParams) {
+  const t = boat.tel;
+  const twa = Math.abs(t.twaDeg) < NO_GO_DEG ? NO_GO_DEG * (Math.sign(t.twaDeg) || 1) : t.twaDeg;
+  c.autopilot = true;
+  c.autopilotMode = 'heading';
+  c.autopilotHeadingDeg = (((t.headingDeg + 2 * twa) % 360) + 360) % 360;
+  st.tacking = 7;
 }

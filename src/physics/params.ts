@@ -46,6 +46,8 @@ export interface TideParams {
 }
 
 export type SideMode = 'auto' | 'port' | 'starboard';
+/** 'custom' = whatever individual assists you've switched on yourself. */
+export type AssistLevel = 'easy' | 'normal' | 'realistic' | 'custom';
 
 export interface ControlParams {
   rudderDeg: number; // + = bear away to starboard (bow swings right)
@@ -72,6 +74,10 @@ export interface ControlParams {
   autopilotMode: 'heading' | 'twa'; // hold a compass heading, or an angle to the true wind
   autopilotHeadingDeg: number;
   autopilotTwaDeg: number; // signed: + = wind over starboard (starboard tack)
+  assistLevel: AssistLevel;
+  steerAssist: boolean; // arrows turn the boat at a steady rate and it holds the new course
+  noGoGuard: boolean; // won't steer into the no-go zone; hold into the wind to tack instead
+  autoRight: boolean; // a capsized boat is righted after a few seconds
 }
 
 export interface BoatSetup {
@@ -112,6 +118,7 @@ export function defaultParams(): SimParams {
       kicker: 0.5, downhaul: 0.2, outhaul: 0.5, barberHauler: 0.3, bridleLengthM: 1.0, forestayTension: 0.5, boardDown: 1,
       helmFwd: 0, helmOut: 0.5, crewFwd: 0, crewOut: 0.5, side: 'auto',
       autoHike: true, heelTargetDeg: 3, autoTrim: false, autopilot: false, autopilotMode: 'heading', autopilotHeadingDeg: 0, autopilotTwaDeg: 45,
+      assistLevel: 'custom', steerAssist: false, noGoGuard: false, autoRight: false,
     },
     setup: {
       // ISO: 100 kg hull, 14.3 m² upwind (main/jib split estimated), 18.8 m² asymmetric.
@@ -121,4 +128,20 @@ export function defaultParams(): SimParams {
       wings: false, wingWidthM: 0.125,
     },
   };
+}
+
+/**
+ * Assist presets. They only change which jobs the virtual crew do for you; the physics is identical.
+ * easy: steer by course, sheets trimmed, crew hike, no pinching into irons, auto-right.
+ * normal: steer by course, crew hike, you trim. realistic: you do the lot.
+ */
+export function applyAssistLevel(c: ControlParams, level: AssistLevel) {
+  c.assistLevel = level;
+  const on = (a: boolean, b: boolean, d: boolean, e: boolean, f: boolean) => {
+    c.steerAssist = a; c.autoTrim = b; c.autoHike = d; c.noGoGuard = e; c.autoRight = f;
+  };
+  if (level === 'easy') on(true, true, true, true, true);
+  else if (level === 'normal') on(true, false, true, false, true);
+  else if (level === 'realistic') on(false, false, false, false, false);
+  if (!c.steerAssist) c.autopilot = false;
 }

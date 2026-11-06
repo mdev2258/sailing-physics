@@ -1,5 +1,5 @@
 import GUI from 'lil-gui';
-import type { SimParams } from '../physics/params';
+import { applyAssistLevel, type AssistLevel, type SimParams } from '../physics/params';
 import { BRIDLE } from '../physics/boat';
 
 export interface ViewOptions {
@@ -18,12 +18,22 @@ export interface GuiActions {
   rightBoat: () => void;
   startAt: (twaDeg: number) => void;
   trimMode: () => void;
+  assistChanged: () => void;
 }
 
 /** Every physics variable, grouped like a sailor thinks about them. */
 export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI {
   const gui = new GUI({ title: 'ISO sim — variables', width: 300 });
   const L = (c: ReturnType<GUI['add']>) => c.decimals(2).listen();
+
+  const c0 = p.controls;
+  const assists = gui.addFolder('How much help?');
+  assists.add(c0, 'assistLevel', { 'Easy: steer, crew do the rest': 'easy', 'Normal: you trim': 'normal', 'Realistic: you do it all': 'realistic', Custom: 'custom' })
+    .name('Assist level (M)').listen().onChange((v: AssistLevel) => { applyAssistLevel(c0, v); act.assistChanged(); });
+  const custom = () => { c0.assistLevel = 'custom'; act.assistChanged(); };
+  assists.add(c0, 'steerAssist').name('Steer by course (arrows)').listen().onChange(custom);
+  assists.add(c0, 'noGoGuard').name('No-go guard (hold to tack)').listen().onChange(custom);
+  assists.add(c0, 'autoRight').name('Auto-right after capsize').listen().onChange(custom);
 
   const sim = gui.addFolder('Simulation');
   sim.add(view, 'paused').name('Paused (Space)').listen();
@@ -97,7 +107,7 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   L(sails.add(c, 'jibSheet', 0, 1, 0.01).name('Jib sheet  Q/A'));
   (sails.add(c, 'gennakerHoisted').name('Gennaker hoisted (G)')).listen();
   L(sails.add(c, 'gennakerSheet', 0, 1, 0.01).name('Gennaker sheet  E/D'));
-  (sails.add(c, 'autoTrim').name('Auto-trim sheets')).listen();
+  (sails.add(c, 'autoTrim').name('Auto-trim sheets')).listen().onChange(custom);
 
   // Led to both side decks on the real boat; 0 = fully eased … 1 = bar tight.
   const lines = gui.addFolder('Control lines');
@@ -117,7 +127,7 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   L(crew.add(c, 'crewOut', -0.5, 1, 0.01).name('Crew out (1 = flat on wire)  Z/X'));
   L(crew.add(c, 'crewFwd', -0.8, 0.8, 0.01).name('Crew fore/aft (m)'));
   crew.add(c, 'side', ['auto', 'port', 'starboard']).name('Side').listen();
-  (crew.add(c, 'autoHike').name('Auto-hike (H)')).listen();
+  (crew.add(c, 'autoHike').name('Auto-hike (H)')).listen().onChange(custom);
   crew.add(c, 'heelTargetDeg', 0, 20, 0.5).name('Auto-hike heel target (°)');
 
   const su = gui.addFolder('Boat setup');

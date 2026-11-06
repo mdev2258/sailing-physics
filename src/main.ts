@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { Simulation } from './physics/sim';
-import { DEG, clamp, towards, wrap360 } from './physics/math';
+import { DEG, clamp, towards, wrap180, wrap360 } from './physics/math';
+import { applyAssistLevel, type AssistLevel } from './physics/params';
+import { NO_GO_DEG, requestTack } from './physics/assist';
 import { Water } from './render/water';
 import { BoatView } from './render/boatView';
 import { FlowView } from './render/flowView';
@@ -17,6 +19,7 @@ import './style.css';
 
 const sim = new Simulation();
 const p = sim.params;
+applyAssistLevel(p.controls, 'easy'); // start friendly; M or the panel changes it
 const view: ViewOptions = { paused: false, timeScale: 1, camera: 'orbit', showForces: false, showFlow: true, showCentres: true, showTrack: true, forceScaleN: 500 };
 
 // ---------- renderer / scene ----------
@@ -189,6 +192,7 @@ const actions = {
   rightBoat: () => sim.rightBoat(),
   startAt: (twa: number) => { sim.reset(wrap360(p.wind.fromDeg - twa)); clearTrack(); },
   trimMode: () => trim.toggle(true),
+  assistChanged: () => updateHelp(),
 };
 const gui = buildGui(p, view, actions);
 const hud = new Hud(document.body);
@@ -203,13 +207,20 @@ const trim = new TrimMode(sim, (on) => {
 });
 const help = document.createElement('div');
 help.id = 'help';
-help.innerHTML = `<b>Keys</b> ←/→ rudder · W/S main · Q/A jib · E/D kite · G hoist kite · B/N board up/down · Z/X crew out/in ·
-  H auto-hike · P autopilot · T tack/gybe (autopilot) · R right boat · F forces · V flow · K centres · L sail trim mode · C camera · Space pause · 1–5 time scale`;
+function updateHelp() {
+  const c = p.controls;
+  const steer = c.steerAssist ? '←/→ turn the boat (it holds the course)' + (c.noGoGuard ? ', hold into the wind to tack' : '') : '←/→ tiller';
+  help.innerHTML = `<b>${c.assistLevel === 'custom' ? 'Custom assists' : c.assistLevel[0].toUpperCase() + c.assistLevel.slice(1) + ' mode'}</b> (M to change) · ${steer} ·
+  T tack/gybe · W/S main · Q/A jib · E/D kite · G hoist kite · B/N board · Z/X crew out/in · H auto-hike · P autopilot ·
+  R right boat · F forces · V flow · K centres · L sail trim mode · C camera · Space pause · 1–5 time scale`;
+}
+updateHelp();
 document.body.appendChild(help);
 
 // ---------- keyboard ----------
 const held = new Set<string>();
 let keyRudder = false;
+let pushIntoWind = 0;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
   held.add(e.code);
@@ -217,13 +228,14 @@ window.addEventListener('keydown', (e) => {
   switch (e.code) {
     case 'Space': view.paused = !view.paused; e.preventDefault(); break;
     case 'KeyG': c.gennakerHoisted = !c.gennakerHoisted; break;
-    case 'KeyH': c.autoHike = !c.autoHike; break;
+    case 'KeyH': c.autoHike = !c.autoHike; c.assistLevel = 'custom'; updateHelp(); break;
     case 'KeyP': c.autopilot = !c.autopilot; if (c.autopilot) c.autopilotHeadingDeg = Math.round(sim.boat.tel.headingDeg); break;
-    case 'KeyT': if (trim.active) { trim.switchTack(); break; } {
-      // tack or gybe through the wind onto the mirror-image TWA
-      const t = sim.boat.tel;
-      c.autopilot = true;
-      c.autopilotHeadingDeg = Math.round(wrap360(t.headingDeg + 2 * t.twaDeg));
+    case 'KeyT': if (trim.active) trim.switchTack(); else requestTack(sim.boat, sim.assist, c); break;
+    case 'KeyM': {
+      const order: AssistLevel[] = ['easy', 'normal', 'realistic'];
+      const i = order.indexOf(c.assistLevel);
+      applyAssistLevel(c, order[(i + 1) % order.length]);
+      updateHelp();
       break;
     }
     case 'KeyR': sim.rightBoat(); break;
@@ -252,6 +264,20 @@ function applyKeys(dt: number) {
     // in trim mode the arrows choose the angle to the wind instead of steering
     if (held.has('ArrowLeft')) trim.nudgeTwa(-20 * dt);
     if (held.has('ArrowRight')) trim.nudgeTwa(20 * dt);
+  } else if (c.steerAssist && (held.has('ArrowLeft') || held.has('ArrowRight'))) {
+    // steer by course: the boat turns at a steady rate while you hold, and holds the course when you let go
+    const dir = (held.has('ArrowRight') ? 1 : 0) - (held.has('ArrowLeft') ? 1 : 0);
+    if (!c.autopilot || c.autopilotMode !== 'heading') { c.autopilotHeadingDeg = Math.round(sim.boat.tel.headingDeg); }
+    c.autopilot = true; c.autopilotMode = 'heading';
+    const t = sim.boat.tel;
+    const before = Math.abs(wrap180(t.twdDeg - c.autopilotHeadingDeg));
+    c.autopilotHeadingDeg = wrap360(c.autopilotHeadingDeg + dir * 35 * dt);
+    const after = Math.abs(wrap180(t.twdDeg - c.autopilotHeadingDeg));
+    // keep pushing into the wind at the edge of the no-go zone → tack
+    if (c.noGoGuard && after < before && after < NO_GO_DEG + 1.5) {
+      pushIntoWind += dt;
+      if (pushIntoWind > 0.6) { requestTack(sim.boat, sim.assist, c); pushIntoWind = 0; held.delete('ArrowLeft'); held.delete('ArrowRight'); }
+    } else pushIntoWind = 0;
   } else if (held.has('ArrowLeft') || held.has('ArrowRight')) {
     keyRudder = true;
     c.autopilot = false;
@@ -262,7 +288,7 @@ function applyKeys(dt: number) {
     if (c.rudderDeg === 0) keyRudder = false;
   }
   const manualTrim = (k: string[]) => k.some((x) => held.has(x));
-  if (manualTrim(['KeyW', 'KeyS', 'KeyQ', 'KeyA', 'KeyE', 'KeyD'])) c.autoTrim = false;
+  if (manualTrim(['KeyW', 'KeyS', 'KeyQ', 'KeyA', 'KeyE', 'KeyD']) && c.autoTrim) { c.autoTrim = false; c.assistLevel = 'custom'; updateHelp(); }
   c.mainsheet = ramp(c.mainsheet, 'KeyW', 'KeyS', 0.4);
   c.jibSheet = ramp(c.jibSheet, 'KeyQ', 'KeyA', 0.4);
   c.gennakerSheet = ramp(c.gennakerSheet, 'KeyE', 'KeyD', 0.4);
