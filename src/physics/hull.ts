@@ -35,7 +35,7 @@ export function sheerY(s: number): number {
 
 /** Section fullness exponent: boxy aft (planing), finer V forward. */
 function sectionPower(s: number): number {
-  return 2.8 - 1.2 * smoothstep(0.55, 1, s);
+  return 2.4 - 0.8 * smoothstep(0.55, 1, s);
 }
 
 /** Half-breadth of the hull at station s and height y (0 outside the hull). */
@@ -62,6 +62,15 @@ export interface Cell { x: number; y: number; z: number; vol: number; hx: number
 
 /** Buoyancy grid resolution. Fine across the boat: the righting moment comes from a thin wedge at the bilge. */
 export const CELL_GRID = { ns: 20, nv: 5, nz: 10 };
+
+/**
+ * The cockpit is open and self-draining: the volume above the floor, inboard of the side decks,
+ * is sea, not floatation. Only the side tanks, under-floor space and bow/stern tanks float the boat.
+ */
+export const COCKPIT = { aftS: 0.04, fwdS: 0.6, sideDeckW: 0.3, floorY: 0.27, strapZ: 0.28 };
+export const cockpitInnerZ = (s: number, B = HULL.B) => Math.max(0.12, (B / 2) * beamFrac(s) - COCKPIT.sideDeckW);
+const inCockpit = (s: number, y: number, z: number) =>
+  s > COCKPIT.aftS && s < COCKPIT.fwdS && y > COCKPIT.floorY && Math.abs(z) < cockpitInnerZ(s);
 export interface Panel { x: number; y: number; z: number; nx: number; ny: number; nz: number; area: number; size: number }
 
 /** Volume cells filling the (sealed, self-draining) hull — used for buoyancy at any attitude. */
@@ -79,6 +88,7 @@ export function buildCells(ns = CELL_GRID.ns, nv = CELL_GRID.nv, nz = CELL_GRID.
       if (hb <= 1e-4) continue;
       const dz = (2 * hb) / nz;
       for (let k = 0; k < nz; k++) {
+        if (inCockpit(s, y, -hb + (k + 0.5) * dz)) continue; // open cockpit: not buoyant
         cells.push({ x: s * L, y, z: -hb + (k + 0.5) * dz, vol: dx * dy * dz, hx: dx / 2, hy: dy / 2, hz: dz / 2, col: i * nz + k });
       }
     }

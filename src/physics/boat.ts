@@ -1,6 +1,6 @@
 import { Matrix3, Quaternion, Vector3 } from 'three';
 import { DEG, G, bearingOf, clamp, interp, lerp, smoothstep, towards, wrap180 } from './math';
-import { CELL_GRID, HULL, buildCells, buildPanels, hullPoint, keelY, sheerY, type Cell, type Panel } from './hull';
+import { CELL_GRID, COCKPIT, HULL, buildCells, buildPanels, hullPoint, keelY, sheerY, type Cell, type Panel } from './hull';
 import { foilCoeffs, sailCoeffs, stripForce, type Coeffs, type FoilSpec, type SailShape } from './coeffs';
 import type { Environment } from './environment';
 import type { BoatSetup, ControlParams } from './params';
@@ -22,7 +22,7 @@ export const RIG = {
 const MAST_DECK_Y = deckAt(RIG.mastX);
 
 /** Cockpit layout (shared by physics seats and the 3D model), from the real boat. */
-export const COCKPIT = { aftS: 0.04, fwdS: 0.6, sideDeckW: 0.3, floorY: 0.27, strapZ: 0.28 };
+export { COCKPIT }; // defined with the hull so the buoyancy cells can leave the open cockpit out
 /** Hiking wings: tube frames along the side decks, used with or without. */
 export const WINGS = { x0: 0.95, x1: 2.65, massEachKg: 3.5 };
 /** Half-beam of the gunwale at x (m). */
@@ -493,7 +493,10 @@ export class Boat {
       nb[0] = pn.nx; nb[1] = pn.ny; nb[2] = pn.nz;
       // cross-flow: surge mostly handled by the resistance model, so damp it out here
       const vn = vb[0] * 0.1 * nb[0] + vb[1] * nb[1] + vb[2] * nb[2];
-      const pn_ = -rhoW * a * (0.45 * vn * Math.abs(vn) + 0.25 * vn);
+      // linear term = heave/pitch/roll damping (wave radiation, ζ ≈ 0.35 in heave): no surge part,
+      // so it doesn't sneak in extra forward drag
+      const vnDamp = vb[1] * nb[1] + vb[2] * nb[2];
+      const pn_ = -rhoW * a * (0.45 * vn * Math.abs(vn) + 1.0 * vnDamp);
       const vnf = vb[0] * nb[0] + vb[1] * nb[1] + vb[2] * nb[2];
       const tx = vb[0] - vnf * nb[0], ty = vb[1] - vnf * nb[1], tz = vb[2] - vnf * nb[2];
       const vt = Math.hypot(tx, ty, tz);

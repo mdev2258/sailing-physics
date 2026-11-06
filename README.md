@@ -17,7 +17,8 @@ full inertia tensor rebuilt every step from hull, rig and crew positions. When t
 stays put and the hull moves under them (momentum conserved). Hydrodynamic added mass in surge/heave/sway and
 roll/pitch/yaw. Fixed 200 Hz step, semi-implicit Euler; stiff terms (sheets, sail-in-water) are integrated implicitly.
 
-**Hydrostatics.** The sealed hull is filled with ~1,000 volume cells (fine across the boat, because the righting moment comes
+**Hydrostatics.** The hull's sealed tanks (side tanks, under-floor, bow and stern) are filled with ~900 volume cells. The open,
+self-draining cockpit is left out, because it holds sea, not floatation (fine across the boat, because the righting moment comes
 from a thin wedge at the bilge); each one's submerged fraction is computed
 against the *local wave surface* at any attitude, so buoyancy, centre of buoyancy, wave-induced heave/pitch/roll
 and capsize all fall out of the same calculation.
@@ -30,7 +31,8 @@ and capsize all fall out of the same calculation.
   when it digs in. That's where the pitch stiffness at speed comes from.
 - Munk moment (a hull sliding sideways wants to turn broadside, which gives weather helm).
 - Immersed-transom drag at low speed (the wide transom drags an eddy until it runs dry), which is why weight forward pays in light air.
-- The resulting stability curve: GM about 1.25 m, GZ peaking at about 0.28 m at 20–25°, vanishing at about 65°.
+- Heave and pitch damping from wave radiation (heave damping ratio about 0.35), so it rides chop instead of bouncing like a cork.
+- The resulting stability curve: draft about 9.5 cm, GM about 0.95 m, GZ peaking at about 0.26 m at 25°, vanishing at about 65°.
 
 **Foils.** Daggerboard (adjustable depth) and rudder in strip theory: finite-aspect-ratio lift slope, stall,
 post-stall flat-plate behaviour to 180°, induced drag, loss of lift near the surface, and board downwash on the rudder.
