@@ -62,6 +62,8 @@ export class SailRuntime {
   strips: SailStrip[] = [];
   areaScale = 1;
   alpha: number[] = [];
+  /** Apparent flow each strip sees (body frame, air relative to the sail), for flow visualisation. */
+  flow: V3[] = [];
   alphaMid = 0;
   force: V3 = [0, 0, 0]; // world, total
   ce: V3 = [0, 0, 0]; // world
@@ -97,6 +99,7 @@ export class SailRuntime {
       this.strips.push({ u, p: lerp3(d.p0, d.p1, u), chord, area: (chord * len * sinA) / n });
     }
     this.alpha = new Array(n).fill(0);
+    this.flow = Array.from({ length: n }, () => [0, 0, 0] as V3);
     this.depths = new Array(n).fill(0.12);
   }
   /** Chord unit vector (body frame) at height fraction u. */
@@ -577,6 +580,7 @@ export class Boat {
           cross(sail.axis, cdir, camber);
           const cs = sail.angle >= 0 ? 1 : -1;
           camber[0] *= cs; camber[1] *= cs; camber[2] *= cs;
+          sail.flow[i][0] = vb[0]; sail.flow[i][1] = vb[1]; sail.flow[i][2] = vb[2];
           sail.alpha[i] = stripForce(vb, sail.axis, cdir, 0.5 * rhoA * area * (1 - wet), (a, o, bk) => sailCoeffs(a, shape, o, bk), this.cf, fa, camber);
           fb[0] += fa[0]; fb[1] += fa[1]; fb[2] += fa[2];
         }

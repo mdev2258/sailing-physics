@@ -52,6 +52,11 @@ main sits in downwash.
 
 The HUD shows the resulting main and jib depth, twist and sheet stop so you can see what each line did.
 
+**Flow lines (V).** For a few sections of each sail, the incoming arrow is the apparent wind the physics
+actually computed for that section. The flow lines either side are a schematic driven by its angle of attack:
+attached and leaving the leech when trimmed, separating into a wake when stalled, flapping past when luffing.
+The dashes move at a fraction of the real flow speed.
+
 **Crew.** Helm and crew positions fore/aft and athwartships (leeward → centre → side deck → full hike / flat on
 the wire). They move at finite speed, swap sides through tacks and gybes, and their mass and windage are real.
 
@@ -80,6 +85,7 @@ no forces are faked. Turn them off and sail it yourself.
 | H | auto-hike · **P** autopilot · **T** tack/gybe onto the mirror TWA |
 | R | right a capsized boat |
 | F | force arrows (sails, board, rudder, buoyancy, gravity, hull) |
+| V | flow over the sails: green flowing, amber luffing, red stalled |
 | C | orbit / chase / top camera |
 | Space | pause · **1–5** time scale |
 
