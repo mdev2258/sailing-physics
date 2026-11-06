@@ -358,3 +358,4 @@ window.addEventListener('resize', () => {
 
 // handy for poking at the physics from the browser console
 (window as unknown as { sim: Simulation }).sim = sim;
+(window as unknown as { three: unknown }).three = { camera, controls, view };

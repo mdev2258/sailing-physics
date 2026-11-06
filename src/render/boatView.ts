@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { HULL, hullPoint, keelY, sheerY } from '../physics/hull';
-import { BRIDLE, RIG, bridleRise, mastPoint, type Boat, type SailRuntime } from '../physics/boat';
-import { DEG, clamp } from '../physics/math';
+import { BRIDLE, COCKPIT, RIG, WINGS, bridleRise, mastPoint, type Boat, type SailRuntime } from '../physics/boat';
+import { DEG, clamp, lerp } from '../physics/math';
 
 const L = HULL.L;
 
@@ -11,7 +11,6 @@ function hullGeometry(): THREE.BufferGeometry {
   const col: number[] = [];
   const idx: number[] = [];
   const white = new THREE.Color(0xf4f4f0), stripe = new THREE.Color(0x1d4f9c), bottom = new THREE.Color(0xe8e8e2);
-  const deckCol = new THREE.Color(0xd9dcd6);
   const push = (p: number[], c: THREE.Color) => { pos.push(p[0], p[1], p[2]); col.push(c.r, c.g, c.b); return pos.length / 3 - 1; };
   // skin, both sides
   for (const side of [-1, 1]) {
@@ -30,25 +29,6 @@ function hullGeometry(): THREE.BufferGeometry {
       }
     }
   }
-  // deck (slight camber) with an open cockpit band left as a darker strip
-  const NA = 6;
-  const base = pos.length / 3;
-  for (let i = 0; i <= NS; i++) {
-    const s = i / NS;
-    const hb = hullPoint(s, 1, 1)[2];
-    for (let k = 0; k <= NA; k++) {
-      const f = (k / NA) * 2 - 1;
-      const camber = 0.03 * (1 - f * f);
-      const cockpit = s > 0.08 && s < 0.62 && Math.abs(f) < 0.7;
-      push([s * L, sheerY(s) + camber - (cockpit ? 0.12 : 0), f * hb], cockpit ? new THREE.Color(0xb9bdb6) : deckCol);
-    }
-  }
-  for (let i = 0; i < NS; i++) {
-    for (let k = 0; k < NA; k++) {
-      const a = base + i * (NA + 1) + k, b = a + NA + 1;
-      idx.push(a, a + 1, b, a + 1, b + 1, b);
-    }
-  }
   // transom
   const tb = pos.length / 3;
   for (let j = 0; j <= NT; j++) { push(hullPoint(0, j / NT, -1), white); push(hullPoint(0, j / NT, 1), white); }
@@ -61,6 +41,87 @@ function hullGeometry(): THREE.BufferGeometry {
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   g.setIndex(idx);
   g.computeVertexNormals();
+  return g;
+}
+
+type P3 = [number, number, number];
+const hb = (s: number) => hullPoint(clamp(s, 0, 1), 1, 1)[2];
+const zIn = (s: number) => Math.max(0.12, hb(s) - COCKPIT.sideDeckW); // inner edge of the side decks
+
+/** Adds a (nu+1)×(nv+1) grid surface to the buffers. */
+function addGrid(pos: number[], col: number[], idx: number[], nu: number, nv: number, f: (u: number, v: number) => P3, c: THREE.Color) {
+  const base = pos.length / 3;
+  for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) { const p = f(i / nu, j / nv); pos.push(p[0], p[1], p[2]); col.push(c.r, c.g, c.b); }
+  for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+    const a = base + i * (nv + 1) + j, b = a + nv + 1;
+    idx.push(a, b, a + 1, a + 1, b, b + 1);
+  }
+}
+
+/**
+ * ISO deck and cockpit, from the real boat: wide flat side decks (the buoyancy tanks you sit on),
+ * a dropped self-draining floor, vertical coamings, a short aft deck and the foredeck up to the mast.
+ */
+function deckGeometry(): THREE.BufferGeometry {
+  const pos: number[] = [], col: number[] = [], idx: number[] = [];
+  const deck = new THREE.Color(0xe9ebe6), floor = new THREE.Color(0xd2d6d0), face = new THREE.Color(0xdfe2dc);
+  const { aftS, fwdS, floorY } = COCKPIT;
+  const N = 40;
+  // foredeck, cambered
+  addGrid(pos, col, idx, N, 10, (u, v) => { const s = lerp(fwdS, 1, u), f = v * 2 - 1; return [s * L, sheerY(s) + 0.035 * (1 - f * f), f * hb(s)]; }, deck);
+  // aft deck
+  addGrid(pos, col, idx, 3, 10, (u, v) => { const s = lerp(0, aftS, u), f = v * 2 - 1; return [s * L, sheerY(s) + 0.01, f * hb(s)]; }, deck);
+  for (const sd of [-1, 1]) {
+    // side deck: flat bench from the gunwale in to the coaming
+    addGrid(pos, col, idx, N, 3, (u, v) => { const s = lerp(aftS, fwdS, u); return [s * L, sheerY(s) + 0.012, sd * lerp(hb(s), zIn(s), v)]; }, deck);
+    // coaming: the inner face of the side tank, down to the floor
+    addGrid(pos, col, idx, N, 2, (u, v) => { const s = lerp(aftS, fwdS, u); return [s * L, lerp(sheerY(s) + 0.012, floorY, v), sd * (zIn(s) - 0.015 * v)]; }, face);
+  }
+  // cockpit floor
+  addGrid(pos, col, idx, N, 8, (u, v) => { const s = lerp(aftS, fwdS, u); return [s * L, floorY, ((v * 2 - 1) * (zIn(s) - 0.015))]; }, floor);
+  // aft lip and forward bulkhead, floor up to deck
+  addGrid(pos, col, idx, 1, 8, (u, v) => [aftS * L, lerp(floorY, sheerY(aftS) + 0.01, u), (v * 2 - 1) * zIn(aftS)], face);
+  addGrid(pos, col, idx, 1, 8, (u, v) => { const f = v * 2 - 1; return [fwdS * L, lerp(floorY, sheerY(fwdS) + 0.035 * (1 - f * f * (zIn(fwdS) / hb(fwdS)) ** 2), u), f * zIn(fwdS)]; }, face);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** Hiking wings: an outer tube along each side, cross tubes back to the gunwale, and a mesh deck. */
+function wingGroup(width: number): THREE.Group {
+  const g = new THREE.Group();
+  const tube = new THREE.MeshStandardMaterial({ color: 0xb7bec6, metalness: 0.7, roughness: 0.35 });
+  const mesh = new THREE.MeshStandardMaterial({ color: 0x2a2f36, roughness: 0.9, transparent: true, opacity: 0.85, side: THREE.DoubleSide });
+  const { x0, x1 } = WINGS;
+  for (const sd of [-1, 1]) {
+    const outer = (x: number): THREE.Vector3 => new THREE.Vector3(x, sheerY(x / L) + 0.03, sd * (hb(x / L) + width));
+    const inner = (x: number): THREE.Vector3 => new THREE.Vector3(x, sheerY(x / L) + 0.02, sd * (hb(x / L) - 0.02));
+    const pts = Array.from({ length: 12 }, (_, i) => outer(lerp(x0, x1, i / 11)));
+    const rail = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.019, 8), tube);
+    g.add(rail);
+    for (let i = 0; i < 4; i++) {
+      const x = lerp(x0 + 0.05, x1 - 0.05, i / 3);
+      const c = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 1, 8), tube);
+      placeSpar(c, inner(x), outer(x));
+      g.add(c);
+    }
+    // trampoline mesh between gunwale and rail
+    const pos: number[] = [], idx: number[] = [];
+    for (let i = 0; i <= 12; i++) {
+      const x = lerp(x0, x1, i / 12);
+      const a = inner(x), b = outer(x);
+      pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+    for (let i = 0; i < 12; i++) idx.push(i * 2, i * 2 + 2, i * 2 + 1, i * 2 + 1, i * 2 + 2, i * 2 + 3);
+    const mg = new THREE.BufferGeometry();
+    mg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    mg.setIndex(idx);
+    mg.computeVertexNormals();
+    g.add(new THREE.Mesh(mg, mesh));
+  }
   return g;
 }
 
@@ -129,24 +190,47 @@ class SailView {
 
 class Sailor {
   group = new THREE.Group();
-  torso: THREE.Mesh;
-  legs: THREE.Mesh;
-  head: THREE.Mesh;
+  private torso: THREE.Mesh;
+  private head: THREE.Mesh;
+  private helmet: THREE.Mesh;
+  private thigh: THREE.Mesh;
+  private shin: THREE.Mesh;
+  private arms!: THREE.Mesh;
   constructor(vest: number) {
     const skin = new THREE.MeshStandardMaterial({ color: 0xe0b48f, roughness: 0.8 });
-    this.torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.42, 4, 10), new THREE.MeshStandardMaterial({ color: vest, roughness: 0.7 }));
-    this.legs = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.62, 4, 8), new THREE.MeshStandardMaterial({ color: 0x1d2633, roughness: 0.8 }));
-    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 14, 10), skin);
-    this.group.add(this.torso, this.legs, this.head);
+    const wetsuit = new THREE.MeshStandardMaterial({ color: 0x1d2633, roughness: 0.8 });
+    // buoyancy aid over a wetsuit: a little deeper front-to-back than wide
+    this.torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.36, 4, 12), new THREE.MeshStandardMaterial({ color: vest, roughness: 0.7 }));
+    this.torso.geometry.scale(1, 1, 0.8);
+    this.arms = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, 0.5, 4, 8), wetsuit);
+    this.arms.geometry.scale(1, 1, 3.2); // both arms as one band, reaching forward
+    this.head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 14, 10), skin);
+    this.helmet = new THREE.Mesh(new THREE.SphereGeometry(0.118, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0x20252c, roughness: 0.5 }));
+    // both legs drawn together as one wide capsule per segment
+    this.thigh = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.3, 4, 8), wetsuit);
+    this.shin = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.32, 4, 8), wetsuit);
+    this.thigh.scale.set(1.5, 1, 1);
+    this.shin.scale.set(1.4, 1, 1);
+    this.group.add(this.torso, this.head, this.helmet, this.thigh, this.shin, this.arms);
   }
-  /** hip = body-frame point, torsoDir/legDir = unit directions (body frame). */
-  pose(hip: THREE.Vector3, torsoDir: THREE.Vector3, legDir: THREE.Vector3) {
-    const up = new THREE.Vector3(0, 1, 0);
-    this.torso.position.copy(hip).addScaledVector(torsoDir, 0.38);
-    this.torso.quaternion.setFromUnitVectors(up, torsoDir);
-    this.head.position.copy(hip).addScaledVector(torsoDir, 0.82);
-    this.legs.position.copy(hip).addScaledVector(legDir, 0.42);
-    this.legs.quaternion.setFromUnitVectors(up, legDir);
+  private limb(m: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3) {
+    const d = b.clone().sub(a);
+    m.position.copy(a).addScaledVector(d, 0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
+  }
+  /** Body-frame hip, torso direction, knee and foot. */
+  pose(hip: THREE.Vector3, torsoDir: THREE.Vector3, knee: THREE.Vector3, foot: THREE.Vector3) {
+    this.torso.position.copy(hip).addScaledVector(torsoDir, 0.36);
+    this.torso.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), torsoDir);
+    this.head.position.copy(hip).addScaledVector(torsoDir, 0.8);
+    this.helmet.position.copy(this.head.position);
+    this.helmet.quaternion.copy(this.torso.quaternion);
+    this.limb(this.thigh, hip, knee);
+    this.limb(this.shin, knee, foot);
+    // arms: from the shoulders forward and down towards the knees (tiller extension / sheet)
+    const shoulder = hip.clone().addScaledVector(torsoDir, 0.55);
+    const hands = knee.clone().lerp(shoulder, 0.35).add(new THREE.Vector3(0.18, 0.05, 0));
+    this.limb(this.arms, shoulder, hands);
   }
 }
 
@@ -163,6 +247,8 @@ export class BoatView {
   private wire: THREE.Line;
   private burgee: THREE.Mesh;
   private rakeKey = NaN;
+  private wings: THREE.Group | null = null;
+  private wingKey = '';
   private bridle!: THREE.Line;
   private sheet!: THREE.Line;
   private block!: THREE.Mesh;
@@ -171,19 +257,9 @@ export class BoatView {
     const hull = new THREE.Mesh(hullGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, side: THREE.DoubleSide }));
     hull.castShadow = true;
     this.root.add(hull);
-    // cockpit: centre console (mainsheet ratchet + daggerboard case) and two toe straps, as on the real boat
-    const floorY = (x: number) => sheerY(x / L) - 0.12;
-    const console_ = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.1, 0.24), new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.5 }));
-    console_.position.set(1.75, floorY(1.75) + 0.05, 0);
-    const ratchet = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.08, 12), new THREE.MeshStandardMaterial({ color: 0x1b1b1b }));
-    ratchet.position.set(1.55, floorY(1.55) + 0.14, 0);
-    this.root.add(console_, ratchet);
-    const strapMat = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.9 });
-    for (const sd of [-1, 1]) {
-      const strap = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.02, 0.09), strapMat);
-      strap.position.set(1.35, floorY(1.35) + 0.035, sd * 0.32);
-      this.root.add(strap);
-    }
+    this.root.add(new THREE.Mesh(deckGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, side: THREE.DoubleSide })));
+    this.addFittings();
+    // mainsheet bridle + the sheet from the block to the boom end
     // mainsheet bridle + the sheet from the block to the boom end
     const lineMat = new THREE.LineBasicMaterial({ color: 0x2b4c8c });
     this.bridle = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 17 }, () => new THREE.Vector3())), lineMat);
@@ -213,6 +289,60 @@ export class BoatView {
     this.root.add(this.burgee);
   }
 
+  /** Centre console with board slot and ratchet, toe straps, control-line loops, aft hatch, mast gate. */
+  private addFittings() {
+    const { floorY, strapZ } = COCKPIT;
+    const white = new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.5 });
+    const black = new THREE.MeshStandardMaterial({ color: 0x15171a, roughness: 0.8 });
+    const grey = new THREE.MeshStandardMaterial({ color: 0x4b5058, roughness: 0.6 });
+    // centre console: runs forward to the daggerboard case
+    const x0 = 1.45, x1 = 2.95, h = 0.13;
+    const con = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, h, 0.2), white);
+    con.position.set((x0 + x1) / 2, floorY + h / 2, 0);
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(RIG.board.chord + 0.04, 0.005, 0.035), black);
+    slot.position.set(RIG.board.x, floorY + h + 0.003, 0);
+    // mainsheet ratchet block on a boss at the aft end, with jammers either side
+    const boss = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 0.06, 14), white);
+    boss.position.set(x0 + 0.08, floorY + h + 0.03, 0);
+    const ratchet = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.016, 8, 16), black);
+    ratchet.position.set(x0 + 0.08, floorY + h + 0.1, 0);
+    ratchet.rotation.y = Math.PI / 2;
+    this.root.add(con, slot, boss, ratchet);
+    for (const sd of [-1, 1]) {
+      const jam = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.03, 0.03), grey);
+      jam.position.set(x0 + 0.25, floorY + h + 0.015, sd * 0.06);
+      this.root.add(jam);
+      // toe strap, slightly lifted off the floor between its ends
+      const strap = new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.012, 0.075), black);
+      strap.position.set(1.05, floorY + 0.05, sd * strapZ);
+      this.root.add(strap);
+    }
+    // continuous control lines (red / blue) led round the inner edge of the side decks and across aft
+    const loop = (off: number, color: number) => {
+      const pts: THREE.Vector3[] = [];
+      for (let i = 0; i <= 10; i++) { const x = lerp(2.65, 0.4, i / 10); pts.push(new THREE.Vector3(x, sheerY(x / L) + 0.02, -(zIn(x / L) + off))); }
+      pts.push(new THREE.Vector3(0.38, floorY + 0.12, -0.2), new THREE.Vector3(0.38, floorY + 0.12, 0.2));
+      for (let i = 0; i <= 10; i++) { const x = lerp(0.4, 2.65, i / 10); pts.push(new THREE.Vector3(x, sheerY(x / L) + 0.02, zIn(x / L) + off)); }
+      this.root.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color })));
+    };
+    loop(0.02, 0xc0392b);
+    loop(0.045, 0x2f6fd6);
+    // round inspection hatch on the aft deck, mast gate on the foredeck
+    const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.012, 20), grey);
+    hatch.position.set(0.1, sheerY(0.02) + 0.016, 0.42);
+    const gate = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.03, 0.12), grey);
+    gate.position.set(RIG.mastX, sheerY(RIG.mastX / L) + 0.045, 0);
+    this.root.add(hatch, gate);
+  }
+
+  private updateWings(b: Boat) {
+    const key = `${b.setup.wings}|${b.setup.wingWidthM}`;
+    if (key === this.wingKey) return;
+    this.wingKey = key;
+    if (this.wings) { this.root.remove(this.wings); this.wings = null; }
+    if (b.setup.wings) { this.wings = wingGroup(b.setup.wingWidthM); this.root.add(this.wings); }
+  }
+
   /** Bridle hangs as a V between the transom eyes; the block sits on it under the boom end. */
   private updateBridle(boomEnd: THREE.Vector3, lengthM: number) {
     const w = BRIDLE.halfSpan, y0 = sheerY(0) + 0.03, x = BRIDLE.x;
@@ -236,6 +366,7 @@ export class BoatView {
   update(b: Boat, t: number, apparentBody: THREE.Vector3, bridleLengthM = 1) {
     this.root.position.copy(b.origin);
     this.root.quaternion.copy(b.q);
+    this.updateWings(b);
     const rake = b.setup.mastRakeDeg;
     if (rake !== this.rakeKey) {
       this.rakeKey = rake;
@@ -261,9 +392,9 @@ export class BoatView {
     this.sails[2].mesh.visible = b.genHoist > 0.02;
     if (this.sails[2].mesh.visible) this.sails[2].update(b.gennaker, b.genHoist, t);
     // crew
-    this.poseSailor(this.helm, b.helm, b.side, false);
-    const onWire = Math.abs(b.crew.z) > 1.1;
-    const harness = this.poseSailor(this.crew, b.crew, b.side, true);
+    this.poseSailor(this.helm, b.helm, b.side, false, b);
+    const onWire = Math.abs(b.crew.z) > b.railZ(b.crew.x) + 0.25;
+    const harness = this.poseSailor(this.crew, b.crew, b.side, true, b);
     this.wire.visible = onWire;
     if (onWire) {
       const pts = [new THREE.Vector3(...mastPoint(4.6, rake)), harness];
@@ -279,28 +410,38 @@ export class BoatView {
     }
   }
 
-  /** Returns the harness point (body frame). */
-  private poseSailor(s: Sailor, cg: THREE.Vector3, side: number, isCrew: boolean): THREE.Vector3 {
+  /** Poses a sailor from their CG in the boat frame; returns the harness point (for the trapeze wire). */
+  private poseSailor(s: Sailor, cg: THREE.Vector3, side: number, isCrew: boolean, b: Boat): THREE.Vector3 {
+    const V = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
     const out = Math.abs(cg.z);
     const sd = Math.sign(cg.z) || side;
     const deck = sheerY(cg.x / L);
-    if (isCrew && out > 1.1) {
-      // trapeze: feet on the gunwale, body extended outboard
-      const hip = new THREE.Vector3(cg.x, cg.y + 0.05, cg.z - sd * 0.1);
-      const feet = new THREE.Vector3(cg.x + 0.15, deck + 0.02, sd * 0.92);
-      const legDir = feet.clone().sub(hip).normalize();
-      const torsoDir = new THREE.Vector3(0.1, 0.35, sd).normalize();
-      s.pose(hip, torsoDir, legDir);
+    const rail = b.railZ(cg.x);
+    const floor = COCKPIT.floorY;
+    if (isCrew && out > rail + 0.25) {
+      // on the wire: feet on the rail, body straight out from them
+      const feet = V(cg.x + 0.12, deck + 0.03, sd * (rail - 0.02));
+      const hip = V(cg.x, cg.y + 0.02, cg.z - sd * 0.05);
+      const legDir = hip.clone().sub(feet).normalize();
+      const knee = feet.clone().lerp(hip, 0.5).add(V(0.04, 0.03, 0));
+      const torsoDir = legDir.clone().add(V(0, 0.25, 0)).normalize();
+      s.pose(hip, torsoDir, knee, feet);
       return hip;
     }
-    // sitting / hiking: hip on the side deck, lean out with hiking
-    const hike = clamp((out - 0.9) / 0.6, 0, 1);
-    const inboard = out < 0.6;
-    const hip = new THREE.Vector3(cg.x, deck + (inboard ? -0.05 : 0.04), inboard ? cg.z : sd * Math.min(out, 1.0));
-    const lean = hike * 70 * DEG;
-    const torsoDir = new THREE.Vector3(0, Math.cos(lean), sd * Math.sin(lean)).normalize();
-    const legDir = new THREE.Vector3(0.35, -0.35, -sd * 0.85).normalize();
-    s.pose(hip, torsoDir, legDir);
+    if (out > rail - 0.3) {
+      // sitting on the side deck edge, feet under the toe strap; lean out as they hike
+      const hike = clamp((out - (rail - 0.08)) / 0.55, 0, 1);
+      const hip = V(cg.x, deck + 0.06, sd * Math.min(rail - 0.04 + 0.12 * hike, rail + 0.1));
+      const lean = (10 + 65 * hike) * DEG;
+      const torsoDir = V(-0.08, Math.cos(lean), sd * Math.sin(lean)).normalize();
+      const foot = V(cg.x + 0.35, floor + 0.05, sd * COCKPIT.strapZ);
+      const knee = V(cg.x + 0.22, deck + 0.12 - 0.08 * hike, sd * lerp(rail - 0.3, (rail + COCKPIT.strapZ) / 2 + 0.05, 0.4));
+      s.pose(hip, torsoDir, knee, foot);
+      return hip;
+    }
+    // in the boat: sitting low on the floor, knees up
+    const hip = V(cg.x, floor + 0.1, cg.z);
+    s.pose(hip, V(-0.15, 1, 0).normalize(), V(cg.x + 0.32, floor + 0.38, cg.z), V(cg.x + 0.62, floor + 0.05, cg.z));
     return hip;
   }
 }

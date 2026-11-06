@@ -17,7 +17,8 @@ full inertia tensor rebuilt every step from hull, rig and crew positions. When t
 stays put and the hull moves under them (momentum conserved). Hydrodynamic added mass in surge/heave/sway and
 roll/pitch/yaw. Fixed 200 Hz step, semi-implicit Euler; stiff terms (sheets, sail-in-water) are integrated implicitly.
 
-**Hydrostatics.** The sealed hull is filled with ~400 volume cells; each one's submerged fraction is computed
+**Hydrostatics.** The sealed hull is filled with ~1,000 volume cells (fine across the boat, because the righting moment comes
+from a thin wedge at the bilge); each one's submerged fraction is computed
 against the *local wave surface* at any attitude, so buoyancy, centre of buoyancy, wave-induced heave/pitch/roll
 and capsize all fall out of the same calculation.
 
@@ -28,6 +29,8 @@ and capsize all fall out of the same calculation.
 - Planing lift vs Froude number whose centre moves with trim, plus stagnation pressure on the bow rocker
   when it digs in. That's where the pitch stiffness at speed comes from.
 - Munk moment (a hull sliding sideways wants to turn broadside, which gives weather helm).
+- Immersed-transom drag at low speed (the wide transom drags an eddy until it runs dry), which is why weight forward pays in light air.
+- The resulting stability curve: GM about 1.25 m, GZ peaking at about 0.28 m at 20–25°, vanishing at about 65°.
 
 **Foils.** Daggerboard (adjustable depth) and rudder in strip theory: finite-aspect-ratio lift slope, stall,
 post-stall flat-plate behaviour to 180°, induced drag, loss of lift near the surface, and board downwash on the rudder.
@@ -35,7 +38,8 @@ post-stall flat-plate behaviour to 180°, induced drag, loss of lift near the su
 **Sails.** Main, jib and gennaker, each split into horizontal strips that see their own apparent wind
 (wind gradient, gusts, boat roll/pitch/yaw rates, heel geometry). Each sail swings freely about its luff and is
 held only by its sheet (a one-sided rope), so they flog, weathervane, back and gybe on their own.
-Backwinded soft sails at small angles flog rather than make lift. With the kite up, the jib is blanketed and the
+Backwinded soft sails at small angles flog rather than make lift. Slot effect: the jib's downwash heads the main and the
+main's upwash lifts the jib. Leeches stretch open under load, so sails twist off in gusts. With the kite up, the jib is blanketed and the
 main sits in downwash.
 
 **Control lines** (led to both side decks, as on the real boat). Each one changes the sail shape
@@ -57,8 +61,10 @@ actually computed for that section. The flow lines either side are a schematic d
 attached and leaving the leech when trimmed, separating into a wake when stalled, flapping past when luffing.
 The dashes move at a fraction of the real flow speed.
 
-**Crew.** Helm and crew positions fore/aft and athwartships (leeward → centre → side deck → full hike / flat on
-the wire). They move at finite speed, swap sides through tacks and gybes, and their mass and windage are real.
+**Crew.** Helm and crew weights, and their positions fore/aft and athwartships (leeward → centre → side deck → full hike / flat on
+the wire). **Wings** on or off: with them on, the rail you sit and trapeze from moves out (default 0.125 m each side,
+from the published 1.75 m hull / 2.0 m overall beam). That's more leverage for 7 kg, and the wing tips drag if you heel
+hard. In the sim wings cost a little speed below about 12 kn and pay off above about 16 kn. They move at finite speed, swap sides through tacks and gybes, and their mass and windage are real.
 
 **Environment.**
 

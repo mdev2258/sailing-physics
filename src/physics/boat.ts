@@ -358,6 +358,7 @@ export class Boat {
     const wb = [0, 0, 0];
     this.toBodyDir(w, wb);
     this.side = wb[2] < 0 ? 1 : -1;
+    if (c && c.side !== 'auto') this.side = c.side === 'starboard' ? 1 : -1; // a manual side wins
     for (const s of this.sails) { s.angle = -this.side * 20 * DEG; s.rate = 0; }
     if (c) {
       const t = this.crewTargets(c);

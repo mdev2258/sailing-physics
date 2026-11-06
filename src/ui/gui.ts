@@ -109,6 +109,9 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   L(lines.add(c, 'forestayTension', 0, 1, 0.01).name('Forestay / rig tension'));
 
   const crew = gui.addFolder('Crew');
+  crew.add(p.setup, 'helmMassKg', 30, 120, 1).name('Helm weight (kg)');
+  crew.add(p.setup, 'crewMassKg', 30, 120, 1).name('Crew weight (kg)');
+  crew.add(p.setup, 'wings').name('Wings fitted');
   L(crew.add(c, 'helmOut', -0.5, 1, 0.01).name('Helm out (0.5 side, 1 hike)'));
   L(crew.add(c, 'helmFwd', -0.8, 0.8, 0.01).name('Helm fore/aft (m)'));
   L(crew.add(c, 'crewOut', -0.5, 1, 0.01).name('Crew out (1 = flat on wire)  Z/X'));
@@ -120,8 +123,7 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   const su = gui.addFolder('Boat setup');
   su.add(p.setup, 'hullMassKg', 60, 200, 1).name('Hull mass (kg)');
   su.add(p.setup, 'rigMassKg', 5, 40, 1).name('Rig mass (kg)');
-  su.add(p.setup, 'helmMassKg', 30, 120, 1).name('Helm mass (kg)');
-  su.add(p.setup, 'crewMassKg', 30, 120, 1).name('Crew mass (kg)');
+  su.add(p.setup, 'wingWidthM', 0.05, 0.4, 0.005).name('Wing width each side (m)');
   su.add(p.setup, 'mainAreaM2', 5, 16, 0.1).name('Main area (m²)');
   su.add(p.setup, 'jibAreaM2', 1, 8, 0.1).name('Jib area (m²)');
   su.add(p.setup, 'gennakerAreaM2', 5, 30, 0.1).name('Gennaker area (m²)');

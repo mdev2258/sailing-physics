@@ -48,6 +48,9 @@ export class TrimMode {
 
     const boat = gui.addFolder('Boat');
     L(boat.add(c, 'boardDown', 0, 1, 0.01).name('Daggerboard down'));
+    boat.add(sim.params.setup, 'helmMassKg', 30, 120, 1).name('Helm weight (kg)').listen();
+    boat.add(sim.params.setup, 'crewMassKg', 30, 120, 1).name('Crew weight (kg)').listen();
+    boat.add(sim.params.setup, 'wings').name('Wings fitted').listen();
     boat.add(c, 'autoHike').name('Crew hike for me').listen();
     boat.add(c, 'heelTargetDeg', 0, 20, 0.5).name('Heel target (°)');
     boat.add({ reset: () => this.resetBest() }, 'reset').name('Reset best speeds');
