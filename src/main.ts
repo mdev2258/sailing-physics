@@ -9,6 +9,12 @@ import { Water } from './render/water';
 import { BoatView } from './render/boatView';
 import { FlowView } from './render/flowView';
 import { CentresView } from './render/centresView';
+import { ForceView } from './render/forceView';
+import { WindView } from './render/windView';
+import { LAYERS, loadLayers, type LayerId } from './render/layers';
+import { forceBalance } from './physics/balance';
+import { LayersPanel } from './ui/layersPanel';
+import { BalancePanel } from './ui/balancePanel';
 import { PointOfSailDial } from './ui/pointOfSail';
 import { HeelGauge } from './ui/heelGauge';
 import { TrimMode } from './ui/trimMode';
@@ -20,7 +26,8 @@ import './style.css';
 const sim = new Simulation();
 const p = sim.params;
 applyAssistLevel(p.controls, 'easy'); // start friendly; M or the panel changes it
-const view: ViewOptions = { paused: false, timeScale: 1, camera: 'orbit', showForces: false, showFlow: true, showCentres: true, showTrack: true, forceScaleN: 500 };
+const view: ViewOptions = { paused: false, timeScale: 1, camera: 'orbit', showTrack: true, forceScaleN: 600 };
+const layers = loadLayers();
 
 // ---------- renderer / scene ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -51,13 +58,17 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.5);
 const hemi = new THREE.HemisphereLight(0xcfe3ff, 0x2a3c48, 0.9);
 scene.add(sun, sun.target, hemi);
 const water = new Water();
-scene.add(water.mesh);
+scene.add(water.mesh, water.deep);
 const boatView = new BoatView();
 scene.add(boatView.root);
 const flowView = new FlowView();
 scene.add(flowView.group);
 const centresView = new CentresView();
 scene.add(centresView.group);
+const forceView = new ForceView();
+scene.add(forceView.group);
+const windView = new WindView();
+scene.add(windView.group);
 
 // Environment map from the sky, so the hull and sails pick up sky light.
 const pmrem = new THREE.PMREMGenerator(renderer);
@@ -134,26 +145,6 @@ function addTrack() {
 }
 function clearTrack() { trackN = 0; lastTrackT = -1; trackGeo.setDrawRange(0, 0); }
 
-// ---------- force arrows ----------
-const forceDefs: Array<[keyof typeof sim.boat.tel.forces, number]> = [
-  ['sails', 0xff4d4d], ['board', 0x4da6ff], ['rudder', 0x9b6bff], ['buoyancy', 0x3ddc84], ['gravity', 0xffffff], ['hull', 0xffb347],
-];
-const arrows = forceDefs.map(([, c]) => new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), 1, c, 0.3, 0.15));
-arrows.forEach((a) => scene.add(a));
-function updateArrows() {
-  arrows.forEach((a, i) => {
-    a.visible = view.showForces;
-    if (!view.showForces) return;
-    const f = sim.boat.tel.forces[forceDefs[i][0]];
-    const v = new THREE.Vector3(...f.f);
-    const len = v.length() / view.forceScaleN;
-    if (len < 0.02) { a.visible = false; return; }
-    a.position.set(...f.at);
-    a.setDirection(v.normalize());
-    a.setLength(len, Math.min(0.4, len * 0.3), Math.min(0.2, len * 0.15));
-  });
-}
-
 // ---------- rain ----------
 const RAIN = 4000;
 const rainGeo = new THREE.BufferGeometry();
@@ -198,12 +189,18 @@ const gui = buildGui(p, view, actions);
 const hud = new Hud(document.body);
 const dial = new PointOfSailDial(document.body);
 const heel = new HeelGauge(document.body);
+const layersPanel = new LayersPanel(document.body, layers, () => updateHelp());
+const balancePanel = new BalancePanel(document.body);
 let cameraBeforeTrim: ViewOptions['camera'] = 'orbit';
-let centresBeforeTrim = true;
+let layersBeforeTrim = { ...layers };
 const trim = new TrimMode(sim, (on) => {
   document.body.classList.toggle('trim-mode', on);
-  if (on) { gui.hide(); cameraBeforeTrim = view.camera; centresBeforeTrim = view.showCentres; view.camera = 'trim'; view.showFlow = true; view.showCentres = false; }
-  else { gui.show(); view.camera = cameraBeforeTrim; view.showCentres = centresBeforeTrim; }
+  if (on) {
+    // looking up the rig: flow and telltales on, the hull's centres out of the way
+    gui.hide(); cameraBeforeTrim = view.camera; layersBeforeTrim = { ...layers }; view.camera = 'trim';
+    layers.airflow = true; layers.telltales = true; layers.centres = false;
+  } else { gui.show(); view.camera = cameraBeforeTrim; Object.assign(layers, layersBeforeTrim); }
+  layersPanel.sync();
 });
 const help = document.createElement('div');
 help.id = 'help';
@@ -212,7 +209,7 @@ function updateHelp() {
   const steer = c.steerAssist ? '←/→ turn the boat (it holds the course)' + (c.noGoGuard ? ', hold into the wind to tack' : '') : '←/→ tiller';
   help.innerHTML = `<b>${c.assistLevel === 'custom' ? 'Custom assists' : c.assistLevel[0].toUpperCase() + c.assistLevel.slice(1) + ' mode'}</b> (M to change) · ${steer} ·
   T tack/gybe · W/S main · Q/A jib · E/D kite · G hoist kite · B/N board · Z/X crew out/in · H auto-hike · P autopilot ·
-  R right boat · F forces · V flow · K centres · L sail trim mode · C camera · Space pause · 1–5 time scale`;
+  R right boat · L sail trim mode · C camera · Space pause · 1–5 time scale · layers: the keys on the chips above`;
 }
 updateHelp();
 document.body.appendChild(help);
@@ -223,8 +220,11 @@ let keyRudder = false;
 let pushIntoWind = 0;
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   held.add(e.code);
   const c = p.controls;
+  const layer = LAYERS.find((l) => l.key === e.code);
+  if (layer) { layersPanel.toggle(layer.id as LayerId); return; }
   switch (e.code) {
     case 'Space': view.paused = !view.paused; e.preventDefault(); break;
     case 'KeyG': c.gennakerHoisted = !c.gennakerHoisted; break;
@@ -239,9 +239,6 @@ window.addEventListener('keydown', (e) => {
       break;
     }
     case 'KeyR': sim.rightBoat(); break;
-    case 'KeyF': view.showForces = !view.showForces; break;
-    case 'KeyV': view.showFlow = !view.showFlow; break;
-    case 'KeyK': view.showCentres = !view.showCentres; break;
     case 'KeyC':
       if (trim.active) view.camera = view.camera === 'trim' ? 'orbit' : 'trim';
       else view.camera = view.camera === 'orbit' ? 'chase' : view.camera === 'chase' ? 'top' : 'orbit';
@@ -307,6 +304,8 @@ function updateCamera(dt: number) {
   // top view is north-up, like a chart; the others keep y up
   camera.up.set(0, 1, 0);
   if (view.camera === 'top') camera.up.set(0, 0, -1);
+  // with an under-water layer on, you may take the camera below the surface and look up at the hull
+  controls.maxPolarAngle = Math.PI * (layers.xray || layers.waterflow || layers.hullpressure ? 0.93 : 0.495);
   if (view.camera === 'orbit') {
     controls.enabled = true;
     camera.position.add(delta);
@@ -341,6 +340,7 @@ function updateCamera(dt: number) {
 // ---------- loop ----------
 let last = performance.now();
 let hudT = 0;
+let balT = 0;
 function frame(now: number) {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
@@ -348,7 +348,9 @@ function frame(now: number) {
   if (!view.paused) sim.advance(dt, view.timeScale);
   updateSky();
   const b = sim.boat;
-  water.update(sim.env.waves, sim.env.wind, sim.t, b.pos.x, b.pos.z, p.wind.speedKn);
+  // layers that live under the surface need to be seen through it
+  const clear = layers.xray || layers.waterflow || layers.hullpressure ? 0.78 : layers.distribution || layers.vortices ? 0.5 : 0;
+  water.update(sim.env.waves, sim.env.wind, sim.t, b.pos.x, b.pos.z, p.wind.speedKn, clear);
   // apparent wind at the masthead, in the boat frame, for the burgee
   const air = [0, 0, 0];
   const top = [0, 0, 0];
@@ -356,15 +358,20 @@ function frame(now: number) {
   sim.env.wind.at(top[0], top[1], top[2], sim.t, air);
   const ab = [0, 0, 0];
   b.toBodyDir([air[0] - b.vel.x, 0, air[2] - b.vel.z], ab);
-  boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]), p.controls.bridleLengthM);
-  flowView.update(b, sim.t, view.paused ? 0 : dt * view.timeScale, view.showFlow);
-  centresView.update(b, dt, view.showCentres);
+  boatView.update(b, sim.t, new THREE.Vector3(ab[0], ab[1], ab[2]), p.controls.bridleLengthM,
+    { sailPressure: layers.sailpressure, hullPressure: layers.hullpressure, xray: layers.xray }, sim.env);
+  flowView.update(b, sim.env, sim.t, view.paused ? 0 : dt * view.timeScale, layers);
+  centresView.update(b, dt, layers.centres);
+  const bal = forceBalance(b);
+  forceView.update(b, bal, layers, view.forceScaleN, view.paused ? 1 : dt);
+  windView.update(b, sim.env, sim.t, layers.wind);
+  balT += dt;
+  if (balT > 0.15 || !layers.balance) { balancePanel.update(b, bal, balT, layers.balance); balT = 0; }
   heel.update(b, p.controls.heelTargetDeg, dt);
   trim.update(dt);
   for (const m of marks) m.position.y = sim.env.waves.elevation(m.position.x, m.position.z, sim.t) + 0.35;
   track.visible = view.showTrack;
   if (!view.paused) addTrack();
-  updateArrows();
   updateRain(view.paused ? 0 : dt);
   updateCamera(dt);
   hudT += dt;
@@ -384,4 +391,5 @@ window.addEventListener('resize', () => {
 
 // handy for poking at the physics from the browser console
 (window as unknown as { sim: Simulation }).sim = sim;
-(window as unknown as { three: unknown }).three = { camera, controls, view };
+(window as unknown as { three: unknown }).three = { camera, controls, view, layers, layersPanel, flowView, forceView, boatView };
+(window as unknown as { balance: unknown }).balance = () => forceBalance(sim.boat);

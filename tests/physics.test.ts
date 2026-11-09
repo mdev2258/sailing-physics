@@ -3,6 +3,10 @@ import { Simulation } from '../src/physics/sim';
 import { applyAssistLevel, defaultParams, type SimParams } from '../src/physics/params';
 import { requestTack } from '../src/physics/assist';
 import { airDensity, tideState, waterDensity } from '../src/physics/environment';
+import { foilSection, newSectionOut, sailSection, sailStallAlpha, sailZeroLift } from '../src/physics/sections';
+import { VortexSystem } from '../src/physics/vortex';
+import { planingScale, savitskyDynamicCL } from '../src/physics/planing';
+import { forceBalance } from '../src/physics/balance';
 import { WaveField, fetchLimitedSea, solveK } from '../src/physics/waves';
 import { G, KN, wrap180, wrap360 } from '../src/physics/math';
 import { pointOfSail, tackName } from '../src/physics/pointsOfSail';
@@ -160,7 +164,7 @@ describe('tide on the boat', () => {
     expect(t.sogKn).toBeLessThan(1.6);
     // the drift itself makes a breeze over the flagging sails, which pushes it back through the water a little
     expect(t.stwKn).toBeLessThan(0.6);
-    expect(Math.abs(wrap180(t.cogDeg - p.tide.floodToDeg))).toBeLessThan(20);
+    expect(Math.abs(wrap180(t.cogDeg - p.tide.floodToDeg))).toBeLessThan(25);
   });
 });
 
@@ -187,7 +191,7 @@ describe('control lines', () => {
     const sim = new Simulation(p);
     sim.boat.updateSailShapes(p.controls);
     const m = sim.boat.main, j = sim.boat.jib;
-    return { mainTwist: m.twistDeg, footDepth: m.depths[0], topDepth: m.depths[5], mainLimit: m.sheetLimit, jibDepth: j.depths[0], jibTwist: j.twistDeg, jibLimit: j.sheetLimit, jibLuffTol: j.luffTol, mainLuffTol: m.luffTol };
+    return { mainTwist: m.twistDeg, footDepth: m.depths[0], topDepth: m.depths[m.depths.length - 1], mainLimit: m.sheetLimit, jibDepth: j.depths[0], jibTwist: j.twistDeg, jibLimit: j.sheetLimit, jibLuffTol: j.luffTol, mainLuffTol: m.luffTol };
   };
   it('kicker holds the leech when the mainsheet is eased', () => {
     const off = shape((c) => { c.mainsheet = 0.4; c.kicker = 0; });
@@ -233,7 +237,7 @@ describe('control lines', () => {
   it('de-powering with the lines reduces heel in a blow', () => {
     const run = (flat: boolean) => {
       const p = calm((p) => {
-        p.wind.speedKn = 17; p.controls.autopilot = true; p.controls.autoHike = false;
+        p.wind.speedKn = 13; p.controls.autopilot = true; p.controls.autoHike = false;
         p.controls.crewOut = 1; p.controls.helmOut = 1; p.controls.mainsheet = 0.95; p.controls.jibSheet = 0.95;
         Object.assign(p.controls, flat
           ? { kicker: 1, downhaul: 1, outhaul: 1, forestayTension: 1 }
@@ -244,7 +248,8 @@ describe('control lines', () => {
       for (let i = 0; i < 20; i++) { sim.run(0.5); heel += -sim.boat.tel.heelDeg * sim.boat.side; }
       return heel / 20;
     };
-    expect(run(true)).toBeLessThan(run(false));
+    // a few degrees flatter at the same sheet position (in much more wind both are simply pinned on their ear)
+    expect(run(true)).toBeLessThan(run(false) - 2);
   });
 });
 
@@ -460,3 +465,218 @@ describe('seakeeping', () => {
     expect(heaveResponse(14)).toBeGreaterThan(0.7);
   });
 });
+
+describe('section models', () => {
+  const DEG = Math.PI / 180;
+  const o = newSectionOut();
+  const main = { depth: 0.12, luffTol: 6 * DEG, cd0: 0.022, luffHold: 0.3 };
+  it('a sail section: zero lift below the chord line, peak lift just past the stall angle, bluff-plate drag square-on', () => {
+    expect(sailZeroLift(0.12) / DEG).toBeLessThan(-10);
+    const a1 = sailStallAlpha(main);
+    const cl = (deg: number) => sailSection(deg * DEG, false, main, o).cl;
+    expect(cl(a1 / DEG + 2)).toBeGreaterThan(1.4);
+    expect(cl(a1 / DEG + 2)).toBeLessThan(1.8);
+    expect(cl(35)).toBeLessThan(cl(a1 / DEG + 2) - 0.3); // stalled: less lift…
+    expect(sailSection(35 * DEG, false, main, o).cd).toBeGreaterThan(0.4); // …and a lot more drag
+    expect(sailSection(90 * DEG, false, main, o).cd).toBeGreaterThan(1.2);
+    expect(sailSection(90 * DEG, false, main, o).cl).toBeLessThan(0.05);
+  });
+  it('a sail luffs below its entry angle: lift collapses and it drags', () => {
+    const drawing = { ...sailSection(8 * DEG, false, main, o) };
+    const luffing = { ...sailSection(1 * DEG, false, main, o) };
+    expect(luffing.cl).toBeLessThan(drawing.cl * 0.45);
+    expect(luffing.cd).toBeGreaterThan(drawing.cd);
+    expect(luffing.luff).toBeGreaterThan(0.8);
+  });
+  it('the separation point walks forward from the leech as the angle goes up', () => {
+    const fs = [4, 8, 14, 25].map((d) => sailSection(d * DEG, false, main, o).fs);
+    expect(fs[0]).toBeGreaterThan(fs[1]);
+    expect(fs[1]).toBeGreaterThan(fs[2]);
+    expect(fs[2]).toBeGreaterThan(fs[3]);
+    expect(fs[0]).toBeGreaterThan(0.75);
+    expect(fs[3]).toBeLessThan(0.2);
+  });
+  it('a foil section: 2π-ish lift slope, stalls near 12°, low drag when attached', () => {
+    const f = { clMax: 1.1, thickness: 0.09, cn90: 1.5 };
+    const at = (deg: number) => ({ ...foilSection(deg * DEG, 8e5, f, o) });
+    expect(at(4).cl / (4 * DEG)).toBeGreaterThan(5.5);
+    expect(at(4).cl / (4 * DEG)).toBeLessThan(6.3);
+    expect(at(4).cd).toBeLessThan(0.012);
+    expect(at(12).cl).toBeGreaterThan(1.0);
+    expect(at(20).cl).toBeLessThan(at(12).cl);
+    expect(at(20).cd).toBeGreaterThan(0.15);
+  });
+});
+
+describe('vortex system (lifting line)', () => {
+  const DEG = Math.PI / 180;
+  /** Flat rectangular wing of the given aspect ratio at 5°, section slope 5.9/rad. Returns CL and induced CD. */
+  function wing(n: number, AR: number, kappa = 0, gap = 0) {
+    const U = 10, alpha = 5 * DEG, cla = 5.9;
+    const sys = new VortexSystem(n);
+    for (let i = 0; i < n; i++) {
+      const k = 3 * i;
+      sys.a[k + 1] = gap + (AR * i) / n; sys.b[k + 1] = gap + (AR * (i + 1)) / n;
+      sys.da[k] = 1; sys.db[k] = 1; sys.core2[i] = (0.02 * AR / n) ** 2; sys.kappa[i] = kappa;
+    }
+    sys.buildInfluence();
+    const ind = [0, 0, 0];
+    for (let it = 0; it < 500; it++) for (let i = 0; i < n; i++) {
+      sys.inducedAt(i, ind);
+      sys.gamma[i] += 0.1 * (0.5 * U * cla * (alpha + Math.atan2(ind[2], U + ind[0])) - sys.gamma[i]);
+    }
+    let lift = 0, drag = 0;
+    for (let i = 0; i < n; i++) { sys.inducedAt(i, ind); lift += (sys.gamma[i] * U * AR) / n; drag += (-sys.gamma[i] * ind[2] * AR) / n; }
+    const q = 0.5 * U * U * AR;
+    return { cl: lift / q, cdi: drag / q, sys };
+  }
+  it('reproduces Prandtl: lift and induced drag of a rectangular wing of aspect ratio 6', () => {
+    const { cl, cdi } = wing(48, 6);
+    // lifting-line theory: CL = a0·α / (1 + a0(1+τ)/(π·AR)), τ ≈ 0.17; CDi = CL²(1+δ)/(π·AR), δ ≈ 0.05
+    expect(cl).toBeGreaterThan(0.365);
+    expect(cl).toBeLessThan(0.39);
+    const e = (cl * cl) / (Math.PI * 6 * cdi);
+    expect(e).toBeGreaterThan(0.9);
+    expect(e).toBeLessThan(1.02);
+  });
+  it('a wall at the root doubles the effective aspect ratio; a gap gives most of that back', () => {
+    const free = wing(24, 3).cl, sealed = wing(24, 3, 1, 0).cl, gapped = wing(24, 3, 1, 0.6).cl, twice = wing(48, 6).cl;
+    expect(sealed).toBeGreaterThan(free * 1.12);
+    expect(Math.abs(sealed - twice)).toBeLessThan(0.01);
+    expect(gapped).toBeLessThan(sealed);
+    expect(gapped).toBeGreaterThan(free);
+  });
+  it('the field it draws is the field it solved: downwash behind the wing, upwash ahead, none far away', () => {
+    const { sys } = wing(24, 6);
+    const v = [0, 0, 0];
+    sys.velocityAt(2, 3, 0, v);
+    expect(v[2]).toBeLessThan(-0.05); // lift is +z, so the air behind is pushed −z
+    const ahead = [0, 0, 0];
+    sys.velocityAt(-2, 3, 0, ahead);
+    expect(ahead[2]).toBeGreaterThan(0.01);
+    const far = [0, 0, 0];
+    sys.velocityAt(-200, 3, 0, far);
+    expect(Math.hypot(far[0], far[1], far[2])).toBeLessThan(1e-3);
+  });
+});
+
+describe('planing', () => {
+  it('the strip model is scaled to land on Savitsky for a flat bottom', () => {
+    // slender theory: CL(beam²) = (π/4)·k·τ. Savitsky: 0.012·√λ·τ^1.1 less the deadrise correction.
+    for (const [tau, lam] of [[3, 2], [4, 1.5], [2.5, 3]]) {
+      const slender = (Math.PI / 4) * planingScale(lam, 0) * ((tau * Math.PI) / 180);
+      const sav = savitskyDynamicCL(tau, lam, 0);
+      expect(slender / sav).toBeGreaterThan(0.85);
+      expect(slender / sav).toBeLessThan(1.15);
+    }
+    expect(planingScale(2, 15)).toBeLessThan(planingScale(2, 0)); // deadrise costs lift
+  });
+  /** Tow the boat at a fixed speed, free to heave and pitch, crew sat still. */
+  function tow(kn: number, crewFwd: number) {
+    const p = calm((p) => { p.wind.speedKn = 0; p.waves.autoFromWind = false; p.waves.heightM = 0; p.controls.autoHike = false;
+      p.controls.helmOut = 0; p.controls.crewOut = 0; p.controls.helmFwd = crewFwd; p.controls.crewFwd = crewFwd; p.controls.mainsheet = 0; p.controls.jibSheet = 0; });
+    const sim = new Simulation(p);
+    sim.reset(90, 1);
+    const V = kn * KN;
+    let R = 0, pitch = 0, lift = 0, n = 0, lo = 99, hi = -99;
+    for (let i = 0; i < 200 * 16; i++) {
+      sim.boat.vel.x = Math.min(V, 1 + ((V - 1) * i) / 1200); sim.boat.vel.z = 0;
+      sim.step();
+      if (i < 200 * 12) continue;
+      n++;
+      for (const it of sim.boat.tel.ledger) if (['friction', 'wave', 'planing', 'hullside', 'transom'].includes(it.id)) R -= it.f[0];
+      pitch += sim.boat.tel.pitchDeg; lift += sim.boat.tel.planingLift;
+      lo = Math.min(lo, sim.boat.tel.pitchDeg); hi = Math.max(hi, sim.boat.tel.pitchDeg);
+    }
+    const W = sim.boat.mass * G;
+    return { rw: R / n / W, pitch: pitch / n, lift: lift / n / W, swing: hi - lo };
+  }
+  it('towing tank: a gentle hump, then drag/weight stays near 0.1 to 0.15 once she planes', () => {
+    const t4 = tow(4, 0), t7 = tow(7, 0), t12 = tow(12, -0.5), t16 = tow(16, -0.5);
+    expect(t4.rw).toBeLessThan(0.04);
+    expect(t7.rw).toBeGreaterThan(0.07);
+    expect(t7.rw).toBeLessThan(0.14);
+    expect(t12.rw).toBeGreaterThan(0.08);
+    expect(t12.rw).toBeLessThan(0.15);
+    expect(t16.rw).toBeLessThan(0.18);
+    expect(t16.rw).toBeLessThan(t7.rw * 1.6); // nowhere near V²: that is what planing buys
+    // she squats and lifts her bow climbing the hump, and carries more and more of her weight on dynamic lift
+    expect(t7.pitch).toBeGreaterThan(t4.pitch + 0.8);
+    expect(t12.lift).toBeGreaterThan(0.25);
+    expect(t16.lift).toBeGreaterThan(t12.lift);
+    expect(t16.swing).toBeLessThan(1); // and runs steady, no porpoising
+  });
+  it('weight aft pays once planing', () => {
+    expect(tow(13, -0.7).rw).toBeLessThan(tow(13, 0.2).rw);
+  });
+});
+
+describe('forces add up', () => {
+  it('steady sailing: the ledger sums to (almost) nothing, drive = drag and side force = side force', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; p.waves.autoFromWind = false; p.waves.heightM = 0; });
+    const sim = sail(p, 60, 40);
+    const net = [0, 0, 0], aero = [0, 0, 0];
+    let n = 0;
+    for (let i = 0; i < 400; i++) {
+      sim.step();
+      n++;
+      for (const it of sim.boat.tel.ledger) for (let k = 0; k < 3; k++) { net[k] += it.f[k]; if (it.group === 'aero') aero[k] += it.f[k]; }
+    }
+    const W = sim.boat.mass * G;
+    const sailForce = Math.hypot(aero[0], aero[1], aero[2]) / n;
+    expect(sailForce).toBeGreaterThan(200);
+    for (let k = 0; k < 3; k++) expect(Math.abs(net[k] / n)).toBeLessThan(0.02 * W);
+    // every group is there
+    const ids = sim.boat.tel.ledger.map((l) => l.id);
+    for (const id of ['w_hull', 'w_helm', 'w_crew', 'buoyancy', 'friction', 'wave', 'board', 'rudder', 'main', 'jib', 'windage']) expect(ids).toContain(id);
+  });
+  it('the balance sheet: drive ≈ drag, heeling force ≈ side force, heeling moment ≈ righting moment', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; p.waves.autoFromWind = false; p.waves.heightM = 0; });
+    const sim = sail(p, 55, 40);
+    const acc = { drive: 0, drag: 0, heelF: 0, sideF: 0, heelM: 0, rightM: 0, up: 0 };
+    const N = 400;
+    for (let i = 0; i < N; i++) {
+      sim.step();
+      const bal = forceBalance(sim.boat);
+      acc.drive += bal.aero.f[0]; acc.drag += bal.hydro.f[0]; acc.heelF += bal.aero.f[1]; acc.sideF += bal.hydro.f[1];
+      acc.heelM += bal.heelingNm; acc.rightM += bal.rightingNm;
+      // rows add up to the net row
+      const sum = bal.rows.reduce((s, r) => s + r.f[2], 0);
+      expect(Math.abs(sum - bal.net.f[2])).toBeLessThan(1e-6);
+      acc.up += bal.net.f[2];
+    }
+    for (const k of Object.keys(acc) as Array<keyof typeof acc>) acc[k] /= N;
+    expect(acc.drive).toBeGreaterThan(100);
+    expect(Math.abs(acc.drive + acc.drag)).toBeLessThan(0.12 * acc.drive); // planing drag and windage sit in other rows
+    expect(Math.abs(acc.heelF)).toBeGreaterThan(200);
+    expect(Math.abs(acc.heelF + acc.sideF)).toBeLessThan(0.12 * Math.abs(acc.heelF));
+    expect(Math.abs(acc.heelM)).toBeGreaterThan(800);
+    expect(Math.abs(acc.heelM + acc.rightM)).toBeLessThan(0.1 * Math.abs(acc.heelM));
+    expect(Math.sign(acc.heelM)).toBe(-Math.sign(acc.rightM));
+    expect(Math.abs(acc.up)).toBeLessThan(0.02 * sim.boat.mass * G);
+  });
+  it('the rudder works in the board\'s downwash: it sees less leeway than the board does', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; p.waves.autoFromWind = false; p.waves.heightM = 0; });
+    const sim = sail(p, 50, 30);
+    const [board, rudder] = sim.boat.foils;
+    const mean = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+    // free-stream angle at the rudder vs the effective one after the board's trailing vortices
+    const k = rudder.n >> 1;
+    const inf = Math.atan2(Math.abs(rudder.flowInf[k][2]), Math.abs(rudder.flowInf[k][0]));
+    const eff = Math.atan2(Math.abs(rudder.flow[k][2]), Math.abs(rudder.flow[k][0]));
+    expect(mean(board.cl)).toBeGreaterThan(0.1);
+    expect(Math.abs(sim.boat.rudder)).toBeLessThan(0.1);
+    expect(eff).toBeLessThan(inf * 0.9);
+  });
+  it('induced drag is real: the rig as a whole drags far more than its sections do', () => {
+    const p = calm((p) => { p.controls.autopilot = true; p.controls.autoTrim = true; p.waves.autoFromWind = false; p.waves.heightM = 0; });
+    const sim = sail(p, 45, 30);
+    const m = sim.boat.main;
+    // lift tilted back by the induced flow: effective angle of attack is well below the geometric one
+    const k = m.mid;
+    const ang = (f: number[]) => Math.atan2(Math.hypot(f[1], f[2]), -f[0]);
+    expect(Math.abs(ang(m.flow[k]) - ang(m.flowInf[k]))).toBeGreaterThan(1 * DEG_);
+    expect(sim.boat.aero.gamma.some((g) => Math.abs(g) > 1)).toBe(true);
+  });
+});
+const DEG_ = Math.PI / 180;

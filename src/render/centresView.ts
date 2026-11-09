@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
 import type { Boat, Centres } from '../physics/boat';
 
-type Key = 'cg' | 'cb' | 'ce' | 'clr' | 'meta';
+type Key = 'cg' | 'cb' | 'ce' | 'clr' | 'meta' | 'planing';
 const DEFS: Record<Key, { label: string; title: string; color: number }> = {
   ce: { label: 'CE', title: 'Centre of effort: where the total sail force acts', color: 0xff4d4d },
   clr: { label: 'CLR', title: 'Centre of lateral resistance: where the sideways water force acts', color: 0x2fe08a },
   cg: { label: 'G', title: 'Centre of gravity: boat + crew', color: 0xffffff },
   cb: { label: 'B', title: 'Centre of buoyancy: centroid of the displaced water', color: 0x4da6ff },
   meta: { label: 'M', title: 'Transverse metacentre', color: 0xc38bff },
+  planing: { label: 'P', title: 'Centre of planing pressure on the bottom', color: 0xffa94d },
 };
 
 /**

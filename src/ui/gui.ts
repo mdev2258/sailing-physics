@@ -6,9 +6,6 @@ export interface ViewOptions {
   paused: boolean;
   timeScale: number;
   camera: 'orbit' | 'chase' | 'top' | 'trim';
-  showForces: boolean;
-  showFlow: boolean;
-  showCentres: boolean;
   showTrack: boolean;
   forceScaleN: number;
 }
@@ -39,11 +36,8 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   sim.add(view, 'paused').name('Paused (Space)').listen();
   sim.add(view, 'timeScale', { '¼×': 0.25, '½×': 0.5, '1×': 1, '2×': 2, '4×': 4 }).name('Time scale');
   sim.add(view, 'camera', ['orbit', 'chase', 'top']).name('Camera (C)').listen();
-  sim.add(view, 'showForces').name('Show forces (F)').listen();
-  sim.add(view, 'showFlow').name('Show flow over sails (V)').listen();
   sim.add({ trim: () => act.trimMode() }, 'trim').name('⛵ Sail trim mode (L)');
-  sim.add(view, 'showCentres').name('Show centres CE/CLR/G/B/M (K)').listen();
-  sim.add(view, 'forceScaleN', 50, 1000, 10).name('Force arrow N per m');
+  sim.add(view, 'forceScaleN', 100, 2000, 10).name('Force arrows: N per metre');
   sim.add(view, 'showTrack').name('Show ground track');
   const start = { twa: 50 };
   sim.add(start, 'twa', -180, 180, 5).name('Restart at TWA°');
@@ -123,9 +117,9 @@ export function buildGui(p: SimParams, view: ViewOptions, act: GuiActions): GUI 
   crew.add(p.setup, 'crewMassKg', 30, 120, 1).name('Crew weight (kg)');
   crew.add(p.setup, 'wings').name('Wings fitted');
   L(crew.add(c, 'helmOut', -0.5, 1, 0.01).name('Helm out (0.5 side, 1 hike)'));
-  L(crew.add(c, 'helmFwd', -0.8, 0.8, 0.01).name('Helm fore/aft (m)'));
+  L(crew.add(c, 'helmFwd', -1, 0.8, 0.01).name('Helm fore/aft (m)'));
   L(crew.add(c, 'crewOut', -0.5, 1, 0.01).name('Crew out (1 = flat on wire)  Z/X'));
-  L(crew.add(c, 'crewFwd', -0.8, 0.8, 0.01).name('Crew fore/aft (m)'));
+  L(crew.add(c, 'crewFwd', -1, 0.8, 0.01).name('Crew fore/aft (m)'));
   crew.add(c, 'side', ['auto', 'port', 'starboard']).name('Side').listen();
   (crew.add(c, 'autoHike').name('Auto-hike (H)')).listen().onChange(custom);
   crew.add(c, 'heelTargetDeg', 0, 20, 0.5).name('Auto-hike heel target (°)');

@@ -56,3 +56,67 @@ body.trim-mode #hud [data-k="time"], body.trim-mode #hud [data-k="lee"], body.tr
   #hud .big { font-size: 28px; }
   #help { display: none; }
 }
+
+/* ---------- layers ---------- */
+#layers { position: fixed; top: 10px; left: 324px; right: 330px; z-index: 5; display: flex; flex-direction: column; align-items: center; pointer-events: none; }
+#layers > * { pointer-events: auto; }
+#layers .ly-fold { display: none; font: 600 12px inherit; color: var(--text); background: var(--panel); border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 8px; padding: 6px 12px; backdrop-filter: blur(6px); cursor: pointer; }
+#layers .ly-body { position: relative; background: var(--panel); color: var(--text); border-radius: 10px; padding: 6px 8px; backdrop-filter: blur(6px);
+  display: flex; flex-wrap: wrap; gap: 4px; align-items: center; justify-content: center; max-width: 100%; box-sizing: border-box; }
+#layers.closed .ly-body { display: none; }
+.ly-group { display: contents; }
+.ly-gl { font-size: 9.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); margin: 0 1px 0 7px; }
+.ly-group:first-child .ly-gl { margin-left: 0; }
+.ly-chip { display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 6px; border-radius: 6px; cursor: pointer;
+  font: 500 11.5px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; color: var(--muted); background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.1); white-space: nowrap; }
+.ly-chip i { width: 9px; height: 9px; border-radius: 50%; box-sizing: border-box; opacity: 0.35; flex: none; }
+.ly-chip kbd { font: 600 9.5px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 3px; padding: 0 3px; line-height: 13px; }
+.ly-chip:hover { background: rgba(255,255,255,0.1); color: var(--text); }
+.ly-chip.on { color: #fff; background: rgba(255,255,255,0.17); border-color: rgba(255,255,255,0.34); }
+.ly-chip.on i { opacity: 1; box-shadow: 0 0 6px currentColor; }
+.ly-chip.ly-plain { color: var(--muted); font-weight: 500; }
+.ly-tools .ly-chip:first-child { margin-left: 8px; }
+.ly-chip:focus-visible, #layers .ly-fold:focus-visible { outline: 2px solid #7fe3ff; outline-offset: 1px; }
+/* what the layer under the pointer shows: hangs below the bar, so the bar itself never changes size */
+.ly-hint { position: absolute; left: 0; right: 0; top: calc(100% + 6px); margin: 0 auto; width: fit-content; max-width: min(100%, 620px); box-sizing: border-box;
+  background: var(--panel); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; line-height: 1.4; color: var(--text); text-align: center;
+  backdrop-filter: blur(6px); pointer-events: none; text-wrap: balance; }
+.ly-hint:empty { display: none; }
+.force-label { font: 600 11px ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif; font-variant-numeric: tabular-nums; white-space: nowrap;
+  text-shadow: 0 0 3px #000, 0 0 6px #000, 0 1px 2px #000; pointer-events: none; }
+
+/* ---------- force table ---------- */
+#balance { position: fixed; left: 324px; bottom: 64px; width: 344px; max-width: calc(100vw - 24px); box-sizing: border-box; background: var(--panel);
+  color: var(--text); border-radius: 10px; padding: 9px 12px 10px; font-size: 11.5px; backdrop-filter: blur(6px); z-index: 4; }
+#balance .bl-title { font-weight: 700; font-size: 13px; display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+#balance .bl-title span { font-weight: 400; font-size: 10.5px; color: var(--muted); }
+#balance table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+#balance th { font-weight: 500; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); text-align: right; padding: 1px 0 2px 8px; white-space: nowrap; }
+#balance td { padding: 1.5px 0 1.5px 8px; text-align: right; border-top: 1px solid rgba(255,255,255,0.06); }
+#balance td:first-child, #balance th:first-child { text-align: left; padding-left: 0; white-space: nowrap; }
+#balance td i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+#balance .bl-net td { border-top: 1px solid rgba(255,255,255,0.35); font-weight: 700; }
+#balance .bl-net td:first-child { font-weight: 500; color: var(--muted); white-space: normal; }
+#balance .bl-mom { margin-top: 7px; display: grid; gap: 2px; }
+#balance .bl-mom > div:not(.bl-bar) { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+#balance .bl-mom small { color: var(--muted); font-size: 10px; }
+#balance .bl-mom b { font-variant-numeric: tabular-nums; white-space: nowrap; }
+#balance .bl-bar { height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; overflow: hidden; margin-bottom: 3px; }
+#balance .bl-bar i { display: block; height: 100%; }
+body.trim-mode #balance { left: 324px; }
+
+@media (max-width: 1180px) {
+  #layers .ly-chip kbd { display: none; }
+}
+@media (max-width: 900px) {
+  #layers { left: 12px; right: 12px; top: auto; bottom: 150px; align-items: flex-start; }
+  #layers .ly-fold { display: block; }
+  #layers .ly-body { margin-top: 6px; max-height: 44vh; overflow-y: auto; justify-content: flex-start; }
+  #layers .ly-gl { flex-basis: 100%; margin: 4px 0 0; }
+  #layers .ly-hint { position: static; flex-basis: 100%; width: auto; max-width: none; background: none; padding: 2px 0 0; text-align: left; color: var(--muted); }
+  #balance { left: 12px; bottom: 190px; }
+  body.trim-mode #balance { left: 12px; }
+}

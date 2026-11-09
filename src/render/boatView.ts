@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { HULL, hullPoint, keelY, sheerY } from '../physics/hull';
 import { BRIDLE, COCKPIT, RIG, WINGS, bridleRise, mastPoint, type Boat, type SailRuntime } from '../physics/boat';
 import { DEG, clamp, lerp } from '../physics/math';
+import type { Environment } from '../physics/environment';
+
+/** What the boat model is being asked to show on top of itself. */
+export interface BoatLook { sailPressure: boolean; hullPressure: boolean; xray: boolean }
 
 const L = HULL.L;
 
@@ -138,31 +142,66 @@ function placeSpar(m: THREE.Object3D, a: THREE.Vector3, b: THREE.Vector3) {
   m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
 }
 
+/** Pressure-difference colour: blue = backwinded, pale = unloaded, through yellow and orange to deep red = hard loaded. */
+const P_STOPS: Array<[number, THREE.Color]> = [
+  [-0.6, new THREE.Color(0x2b6cff)], [0, new THREE.Color(0xf3efe4)], [0.6, new THREE.Color(0xffd45c)],
+  [1.4, new THREE.Color(0xff7a2f)], [2.5, new THREE.Color(0xd9261c)], [4.2, new THREE.Color(0x7a0f4a)],
+];
+function pressureColor(v: number, out: THREE.Color): THREE.Color {
+  if (v <= P_STOPS[0][0]) return out.copy(P_STOPS[0][1]);
+  for (let i = 1; i < P_STOPS.length; i++) {
+    if (v <= P_STOPS[i][0]) {
+      const [v0, c0] = P_STOPS[i - 1], [v1, c1] = P_STOPS[i];
+      return out.copy(c0).lerp(c1, (v - v0) / (v1 - v0));
+    }
+  }
+  return out.copy(P_STOPS[P_STOPS.length - 1][1]);
+}
+
 class SailView {
   mesh: THREE.Mesh;
   private geo: THREE.BufferGeometry;
-  private readonly NR = 14;
-  private readonly NC = 10;
+  private mat: THREE.MeshStandardMaterial;
+  private base: THREE.Color;
+  private baseOpacity: number;
+  private painted = false;
+  private readonly NR = 16;
+  private readonly NC = 12;
+  private c = new THREE.Color();
   constructor(color: number, opacity = 0.96) {
     const NR = this.NR, NC = this.NC;
+    this.base = new THREE.Color(color);
+    this.baseOpacity = opacity;
     this.geo = new THREE.BufferGeometry();
-    this.geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array((NR + 1) * (NC + 1) * 3), 3));
+    const nv = (NR + 1) * (NC + 1);
+    this.geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(nv * 3), 3));
+    const col = new Float32Array(nv * 3);
+    for (let i = 0; i < nv; i++) { col[i * 3] = this.base.r; col[i * 3 + 1] = this.base.g; col[i * 3 + 2] = this.base.b; }
+    this.geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
     const idx: number[] = [];
     for (let i = 0; i < NR; i++) for (let j = 0; j < NC; j++) {
       const a = i * (NC + 1) + j, b = a + NC + 1;
       idx.push(a, b, a + 1, a + 1, b, b + 1);
     }
     this.geo.setIndex(idx);
-    this.mesh = new THREE.Mesh(this.geo, new THREE.MeshStandardMaterial({
-      color, side: THREE.DoubleSide, roughness: 0.75, transparent: opacity < 1, opacity,
-    }));
+    this.mat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.75, transparent: true, opacity });
+    this.mesh = new THREE.Mesh(this.geo, this.mat);
     this.mesh.frustumCulled = false;
   }
-  update(s: SailRuntime, hoist: number, t: number) {
+  /**
+   * `pressure`: paint the cloth with the pressure difference across it. Per strip that is the section's
+   * lift coefficient × the dynamic pressure it sees; along the chord it follows thin-aerofoil theory
+   * (a peak at the luff from incidence, a hump from camber), levels off behind the separation point,
+   * and goes negative at the luff when the sail is luffing. `qRef` scales it (dynamic pressure of the apparent wind).
+   */
+  update(s: SailRuntime, hoist: number, t: number, look: BoatLook, qRef: number) {
     const pos = this.geo.attributes.position as THREE.BufferAttribute;
+    const col = this.geo.attributes.color as THREE.BufferAttribute;
     const NR = this.NR, NC = this.NC;
     const side = s.angle >= 0 ? 1 : -1;
     const ax = s.axis;
+    const n = s.strips.length;
+    const pressure = look.sailPressure;
     // luffing flutter when the sail is near zero angle of attack
     const luff = clamp(1 - s.alphaMid / (s.luffTol * 1.2), 0, 1);
     for (let i = 0; i <= NR; i++) {
@@ -173,17 +212,45 @@ class SailView {
       let nx = ax[1] * c[2] - ax[2] * c[1], ny = ax[2] * c[0] - ax[0] * c[2], nz = ax[0] * c[1] - ax[1] * c[0];
       const nl = Math.hypot(nx, ny, nz) || 1;
       nx = (nx / nl) * side; ny = (ny / nl) * side; nz = (nz / nl) * side;
+      const k = clamp(Math.round(u * n - 0.5), 0, n - 1);
+      let load = 0, shareI = 0.5, fs = 1, lf = 0;
+      if (pressure) {
+        const f = s.flow[k];
+        const q = 0.6125 * (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+        load = (s.cl[k] * q) / Math.max(qRef, 1);
+        const a = Math.min(s.alpha[k], 0.6), a0 = 1.85 * s.depths[k];
+        shareI = a / (a + a0);
+        fs = s.fs[k]; lf = s.luff[k];
+      }
       for (let j = 0; j <= NC; j++) {
         const x = j / NC;
         let bulge = sec.depth * sec.chord * 6.75 * x * (1 - x) ** 2 * 0.9; // max ≈ depth·chord at 1/3 chord
         bulge += luff * 0.06 * Math.sin(t * 18 + x * 9 + u * 4) * x * (1 - x) * 4;
-        const k = (i * (NC + 1) + j) * 3;
-        pos.array[k] = sec.p[0] + c[0] * sec.chord * x + nx * bulge;
-        pos.array[k + 1] = sec.p[1] + c[1] * sec.chord * x + ny * bulge;
-        pos.array[k + 2] = sec.p[2] + c[2] * sec.chord * x + nz * bulge;
+        const o = (i * (NC + 1) + j) * 3;
+        pos.array[o] = sec.p[0] + c[0] * sec.chord * x + nx * bulge;
+        pos.array[o + 1] = sec.p[1] + c[1] * sec.chord * x + ny * bulge;
+        pos.array[o + 2] = sec.p[2] + c[2] * sec.chord * x + nz * bulge;
+        if (pressure) {
+          const xs = Math.min(Math.max(x, 0.03), 0.985);
+          const shape = (xx: number) => shareI * 0.6366 * Math.sqrt((1 - xx) / xx) + (1 - shareI) * 2.546 * Math.sqrt(xx * (1 - xx));
+          // behind the separation point the suction side just holds a flat, weaker pressure
+          const xsep = Math.max(fs, 0.12);
+          let v = load * (xs <= xsep ? shape(xs) : Math.max(0.35, 0.8 * shape(xsep)));
+          if (lf > 0 && xs < 0.4) v -= load * lf * 2.2 * (1 - xs / 0.4) + 0.5 * lf * (1 - xs / 0.4);
+          pressureColor(v, this.c);
+          col.array[o] = this.c.r; col.array[o + 1] = this.c.g; col.array[o + 2] = this.c.b;
+        }
       }
     }
     pos.needsUpdate = true;
+    if (pressure) { col.needsUpdate = true; this.painted = true; }
+    else if (this.painted) {
+      this.painted = false;
+      for (let o = 0; o < col.array.length; o += 3) { col.array[o] = this.base.r; col.array[o + 1] = this.base.g; col.array[o + 2] = this.base.b; }
+      col.needsUpdate = true;
+    }
+    const op = look.xray && !pressure ? 0.3 : look.xray ? 0.6 : this.baseOpacity;
+    if (this.mat.opacity !== op) { this.mat.opacity = op; this.mat.depthWrite = !look.xray; }
     this.geo.computeVertexNormals();
   }
 }
@@ -252,14 +319,21 @@ export class BoatView {
   private bridle!: THREE.Line;
   private sheet!: THREE.Line;
   private block!: THREE.Mesh;
+  private hull: THREE.Mesh;
+  private deck: THREE.Mesh;
+  private hullBase: Float32Array;
+  private hullPainted = false;
+  private col = new THREE.Color();
 
   constructor() {
     const hull = new THREE.Mesh(hullGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.35, side: THREE.DoubleSide }));
     hull.castShadow = true;
     this.root.add(hull);
-    this.root.add(new THREE.Mesh(deckGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, side: THREE.DoubleSide })));
+    this.hull = hull;
+    this.hullBase = (hull.geometry.attributes.color.array as Float32Array).slice();
+    this.deck = new THREE.Mesh(deckGeometry(), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, side: THREE.DoubleSide }));
+    this.root.add(this.deck);
     this.addFittings();
-    // mainsheet bridle + the sheet from the block to the boom end
     // mainsheet bridle + the sheet from the block to the boom end
     const lineMat = new THREE.LineBasicMaterial({ color: 0x2b4c8c });
     this.bridle = new THREE.Line(new THREE.BufferGeometry().setFromPoints(Array.from({ length: 17 }, () => new THREE.Vector3())), lineMat);
@@ -363,7 +437,64 @@ export class BoatView {
     (this.sheet.geometry as THREE.BufferGeometry).setFromPoints([blk, boomEnd]);
   }
 
-  update(b: Boat, t: number, apparentBody: THREE.Vector3, bridleLengthM = 1) {
+  /**
+   * Wetted-hull layer: blue deepening with depth below the local water surface (static pressure),
+   * orange where the bottom is carrying planing pressure. Off: the hull's own paint.
+   */
+  private paintHull(b: Boat, env: Environment, t: number, on: boolean) {
+    const colAttr = this.hull.geometry.attributes.color as THREE.BufferAttribute;
+    const col = colAttr.array as Float32Array;
+    if (!on) {
+      if (this.hullPainted) { col.set(this.hullBase); colAttr.needsUpdate = true; this.hullPainted = false; }
+      return;
+    }
+    this.hullPainted = true;
+    const pos = this.hull.geometry.attributes.position.array as Float32Array;
+    const R = b.R, o = b.origin;
+    // planing force per station, by where it acts
+    const ns = b.planingStrip[0].length, dx = L / ns;
+    const pl = [new Float32Array(ns), new Float32Array(ns)];
+    for (let sd = 0; sd < 2; sd++) for (let i = 0; i < ns; i++) {
+      const f = b.planingStrip[sd][i];
+      if (f > 0) pl[sd][Math.min(ns - 1, Math.max(0, Math.floor(b.planingAt[sd][i][0] / dx)))] += f;
+    }
+    // a dinghy only draws a hand's breadth: the whole ramp is spent on the first 14 cm
+    const shallow = new THREE.Color(0x4fb0ff), deep = new THREE.Color(0x06207a), hot = new THREE.Color(0xff8a1f);
+    const c = this.col;
+    let etaX = NaN, etaZ = NaN, eta = 0;
+    for (let v = 0; v < pos.length; v += 3) {
+      const x = pos[v], y = pos[v + 1], z = pos[v + 2];
+      const wx = o.x + R[0] * x + R[1] * y + R[2] * z, wy = o.y + R[3] * x + R[4] * y + R[5] * z, wz = o.z + R[6] * x + R[7] * y + R[8] * z;
+      // the surface height changes slowly along the hull: re-sample only when we have moved on a bit
+      if (!(Math.abs(wx - etaX) < 0.12 && Math.abs(wz - etaZ) < 0.12)) { eta = env.waves.elevation(wx, wz, t); etaX = wx; etaZ = wz; }
+      const d = eta - wy;
+      if (d <= 0) { col[v] = this.hullBase[v]; col[v + 1] = this.hullBase[v + 1]; col[v + 2] = this.hullBase[v + 2]; continue; }
+      c.copy(shallow).lerp(deep, Math.min(1, d / 0.14));
+      const st = Math.min(ns - 1, Math.max(0, Math.floor(x / dx)));
+      const f = pl[z >= 0 ? 1 : 0][st];
+      if (f > 3 && y < keelY(x / L) + 0.09) c.lerp(hot, Math.min(1, f / 220));
+      col[v] = c.r; col[v + 1] = c.g; col[v + 2] = c.b;
+    }
+    colAttr.needsUpdate = true;
+  }
+
+  private xrayKey = '';
+  private setXray(on: boolean, painted: boolean) {
+    const key = `${on}|${painted}`;
+    if (key === this.xrayKey) return;
+    this.xrayKey = key;
+    // with the wetted-hull layer on, the hull stays solid enough to read its colours
+    const set = (m: THREE.Mesh, op: number) => {
+      const mat = m.material as THREE.MeshStandardMaterial;
+      mat.transparent = on; mat.opacity = on ? op : 1; mat.depthWrite = !on; mat.needsUpdate = true;
+    };
+    set(this.hull, painted ? 0.8 : 0.28);
+    set(this.deck, 0.22);
+  }
+
+  update(b: Boat, t: number, apparentBody: THREE.Vector3, bridleLengthM: number, look: BoatLook, env: Environment) {
+    this.setXray(look.xray, look.hullPressure);
+    this.paintHull(b, env, t, look.hullPressure);
     this.root.position.copy(b.origin);
     this.root.quaternion.copy(b.q);
     this.updateWings(b);
@@ -387,10 +518,11 @@ export class BoatView {
     this.board.position.set(RIG.board.x, keelY(RIG.board.x / L) - RIG.board.span * b.board + span / 2, 0);
     this.rudder.rotation.y = b.rudder;
     // sails
-    this.sails[0].update(b.main, 1, t);
-    this.sails[1].update(b.jib, 1, t);
+    const qRef = 0.6125 * (b.tel.awsKn * 0.514444) ** 2;
+    this.sails[0].update(b.main, 1, t, look, qRef);
+    this.sails[1].update(b.jib, 1, t, look, qRef);
     this.sails[2].mesh.visible = b.genHoist > 0.02;
-    if (this.sails[2].mesh.visible) this.sails[2].update(b.gennaker, b.genHoist, t);
+    if (this.sails[2].mesh.visible) this.sails[2].update(b.gennaker, b.genHoist, t, look, qRef);
     // crew
     this.poseSailor(this.helm, b.helm, b.side, false, b);
     const onWire = Math.abs(b.crew.z) > b.railZ(b.crew.x) + 0.25;

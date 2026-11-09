@@ -1,6 +1,6 @@
 import type { Simulation } from '../physics/sim';
 import { DEG } from '../physics/math';
-import { sailOptAlpha } from '../physics/coeffs';
+import type { SailRuntime } from '../physics/boat';
 
 const fmt = (x: number, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : '–');
 const deg3 = (x: number) => `${Math.round(((x % 360) + 360) % 360).toString().padStart(3, '0')}°`;
@@ -63,29 +63,26 @@ export class Hud {
     set('sea', `Hs ${fmt(env.waves.hs, 2)} m · Tp ${fmt(env.waves.tp)} s`);
     set('rho', `${fmt(env.rhoAir, 3)} / ${fmt(env.rhoWater, 0)} kg/m³`);
     const m = b.main, j = b.jib;
-    set('main', `depth ${Math.round(m.depths[1] * 100)}/${Math.round(m.depths[4] * 100)}% · twist ${Math.round(m.twistDeg)}° · sheet stops ${Math.round(m.sheetLimit / DEG)}°`);
+    set('main', `depth ${Math.round(m.depths[1] * 100)}/${Math.round(m.depths[m.depths.length - 3] * 100)}% · twist ${Math.round(m.twistDeg)}° · sheet stops ${Math.round(m.sheetLimit / DEG)}°`);
     set('jib', `depth ${Math.round(j.depths[0] * 100)}% · twist ${Math.round(j.twistDeg)}° · lead ${Math.round(j.sheetLimit / DEG)}°`);
     const cn = t.centres;
     if (cn) {
       set('lead', `${cn.ce && cn.clr ? `${fmt(cn.leadM, 2)} m` : '–'} (design ${fmt(cn.geoLeadM, 2)} m)`);
       set('gz', `${fmt(cn.gzM, 2)} m · RM ${fmt(cn.rightingNm / 1000, 2)} kN·m`);
     }
-    set('disp', `${fmt(t.dispKg, 0)} kg (lift ${fmt(t.planingLift, 0)} N)`);
+    set('disp', `${fmt(t.dispKg, 0)} kg · planing ${fmt((100 * Math.max(t.planingLift, 0)) / (b.mass * 9.80665), 0)}%`);
     set('wet', `${fmt(t.wettedM2, 2)} m²`);
     const mm = Math.floor(sim.t / 60), ss = Math.floor(sim.t % 60);
     set('time', `${mm}:${ss.toString().padStart(2, '0')}  ${paused ? '⏸' : `${timeScale}×`}`);
 
-    // telltales: angle of attack of each sail's middle section
-    const tell = (name: string, alpha: number, depth: number, luffTol: number, on: boolean) => {
+    // telltales: what the middle of each sail is doing (effective angle of attack, and whether the flow is holding on)
+    const tell = (name: string, sl: SailRuntime, on: boolean) => {
       if (!on) return '';
-      const a = alpha / DEG, opt = sailOptAlpha(depth) / DEG;
-      const st = alpha < luffTol ? ['luffing', 'warn'] : a > opt + 10 ? ['stalled', 'bad'] : ['flowing', 'ok'];
-      return `<span class="tt ${st[1]}">${name} α ${Math.round(a)}° ${st[0]}</span>`;
+      const k = sl.mid;
+      const st = sl.luff[k] > 0.4 ? ['luffing', 'warn'] : sl.fs[k] < 0.45 ? ['stalled', 'bad'] : ['flowing', 'ok'];
+      return `<span class="tt ${st[1]}">${name} α ${Math.round(sl.alphaMid / DEG)}° ${st[0]}</span>`;
     };
-    this.trim.innerHTML =
-      tell('Main', b.main.alphaMid, b.main.depths[3], b.main.luffTol, true) +
-      tell('Jib', b.jib.alphaMid, b.jib.depths[2], b.jib.luffTol, true) +
-      tell('Kite', b.gennaker.alphaMid, b.gennaker.depths[3], b.gennaker.luffTol, b.genHoist > 0.9);
+    this.trim.innerHTML = tell('Main', b.main, true) + tell('Jib', b.jib, true) + tell('Kite', b.gennaker, b.genHoist > 0.9);
 
     const badges: string[] = [];
     if (t.capsized) badges.push('<span class="badge bad">CAPSIZED — press R</span>');

@@ -11,6 +11,9 @@ import { clamp, smoothstep } from './math';
 export const HULL = { L: 4.74, B: 1.75 };
 
 const MAXB_S = 0.42;
+/** Keel rise at the stem above the lowest point of the rocker (m): the forefoot sits just clear of the water at rest. */
+const BOW_RISE = 0.16;
+const BOW_POWER = 2.6;
 
 /** Deck-level half-beam fraction (of B/2). Wide transom, fine bow. */
 export function beamFrac(s: number): number {
@@ -24,7 +27,14 @@ export function beamFrac(s: number): number {
 export function keelY(s: number): number {
   s = clamp(s, 0, 1);
   if (s < 0.35) return 0.025 * ((0.35 - s) / 0.35) ** 2;
-  return 0.33 * ((s - 0.35) / 0.65) ** 2.2;
+  return BOW_RISE * ((s - 0.35) / 0.65) ** BOW_POWER;
+}
+
+/** Slope of the keel line, d(keelY)/dx: negative in the run aft (it rises to the transom), positive forward. */
+export function keelSlope(s: number, L = HULL.L): number {
+  s = clamp(s, 0, 1);
+  if (s < 0.35) return (-0.05 * (0.35 - s)) / (0.35 * 0.35 * L);
+  return (BOW_RISE * BOW_POWER * Math.pow((s - 0.35) / 0.65, BOW_POWER - 1)) / (0.65 * L);
 }
 
 /** Sheer (gunwale) height. */
@@ -58,7 +68,7 @@ export function hullPoint(s: number, t: number, side: number, L = HULL.L, B = HU
   return [s * L, y, side * hb];
 }
 
-export interface Cell { x: number; y: number; z: number; vol: number; hx: number; hy: number; hz: number; col: number }
+export interface Cell { x: number; y: number; z: number; vol: number; hx: number; hy: number; hz: number; col: number; st: number }
 
 /** Buoyancy grid resolution. Fine across the boat: the righting moment comes from a thin wedge at the bilge. */
 export const CELL_GRID = { ns: 20, nv: 5, nz: 10 };
@@ -89,7 +99,7 @@ export function buildCells(ns = CELL_GRID.ns, nv = CELL_GRID.nv, nz = CELL_GRID.
       const dz = (2 * hb) / nz;
       for (let k = 0; k < nz; k++) {
         if (inCockpit(s, y, -hb + (k + 0.5) * dz)) continue; // open cockpit: not buoyant
-        cells.push({ x: s * L, y, z: -hb + (k + 0.5) * dz, vol: dx * dy * dz, hx: dx / 2, hy: dy / 2, hz: dz / 2, col: i * nz + k });
+        cells.push({ x: s * L, y, z: -hb + (k + 0.5) * dz, vol: dx * dy * dz, hx: dx / 2, hy: dy / 2, hz: dz / 2, col: i * nz + k, st: i });
       }
     }
   }

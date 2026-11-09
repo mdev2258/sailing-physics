@@ -1,6 +1,5 @@
 import { DEG, clamp, wrap180 } from './math';
-import { sailOptAlpha } from './coeffs';
-import type { Boat } from './boat';
+import type { Boat, SailRuntime } from './boat';
 import type { ControlParams } from './params';
 
 /**
@@ -10,7 +9,8 @@ import type { ControlParams } from './params';
 export interface AssistState {
   hikeI: number; // integral part of the hiking demand
   trim: [number, number, number]; // sheet set-points from the angle-of-attack loop (main, jib, kite)
-  depower: number; // smoothed proportional ease when overpowered
+  depower: number; // smoothed ease when overpowered
+  depowerI: number; // the part of it held on while the crew are flat out and she still heels
   hadTrim: boolean;
   gybing: number; // seconds left of "grab the falls and throw the boom across"
   tacking: number; // seconds left of an assisted tack/gybe (the no-go guard stands aside)
@@ -18,7 +18,7 @@ export interface AssistState {
 }
 
 export function newAssistState(): AssistState {
-  return { hikeI: 0, trim: [0.85, 0.85, 0.5], depower: 0, hadTrim: false, gybing: 0, tacking: 0, capsizedFor: 0 };
+  return { hikeI: 0, trim: [0.85, 0.85, 0.5], depower: 0, depowerI: 0, hadTrim: false, gybing: 0, tacking: 0, capsizedFor: 0 };
 }
 
 export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: number) {
@@ -30,17 +30,20 @@ export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: 
 
   if (c.autoTrim) {
     if (!st.hadTrim) st.trim = [c.mainsheet, c.jibSheet, c.gennakerSheet];
-    // 1) slow loop: hold each sail just below its max-lift angle of attack
-    const loop = (i: 0 | 1 | 2, alphaMid: number, depth: number) => {
-      const target = sailOptAlpha(depth) * 0.8;
-      st.trim[i] = clamp(st.trim[i] - 0.02 * ((alphaMid - target) / DEG) * dt, 0, 1);
+    // 1) slow loop: hold each sail at its best working angle of attack (leech just starting to break)
+    const loop = (i: 0 | 1 | 2, sail: SailRuntime) => {
+      const target = sail.optAlpha();
+      st.trim[i] = clamp(st.trim[i] - 0.02 * ((sail.alphaMid - target) / DEG) * dt, 0, 1);
     };
-    loop(0, boat.main.alphaMid, boat.main.depths[3]);
-    loop(1, boat.jib.alphaMid, boat.jib.depths[2]);
-    if (boat.genHoist > 0.9) loop(2, boat.gennaker.alphaMid, boat.gennaker.depths[3]);
-    // 2) fast proportional ease when overpowered (heel well past target), smoothed like a hand on the sheet
+    loop(0, boat.main);
+    loop(1, boat.jib);
+    if (boat.genHoist > 0.9) loop(2, boat.gennaker);
+    // 2) overpowered: a quick ease on the gust (proportional, smoothed like a hand on the sheet), and
+    //    once the crew are flat out and she is still heeling, keep easing until she comes back upright
     const over = Math.max(0, err - 4 + 0.3 * heelRate);
-    st.depower += (clamp(0.035 * over, 0, 0.9) - st.depower) * Math.min(1, 4 * dt);
+    const flatOut = !c.autoHike || (c.crewOut > 0.95 && c.helmOut > 0.9);
+    st.depowerI = clamp(st.depowerI + (flatOut ? 0.02 * (err - 2.5) : -0.08) * dt, 0, 0.7);
+    st.depower += (clamp(0.035 * over + st.depowerI, 0, 0.9) - st.depower) * Math.min(1, 4 * dt);
     c.mainsheet = clamp(st.trim[0] - st.depower, 0, 1);
     // By the lee (boom on the windward side, wind well aft): pull the boom across, as a crew would.
     const byTheLee = Math.abs(tel.awaDeg) > 150 && Math.sign(tel.awaDeg) === Math.sign(boat.main.angle);
@@ -67,7 +70,7 @@ export function applyAssists(boat: Boat, st: AssistState, c: ControlParams, dt: 
       c.helmOut = 0.5 + 0.5 * clamp((D - 0.4) / 0.6, 0, 1);
     }
     // fore/aft: weight forward in light air, back when planing
-    const aft = -0.7 * clamp((tel.fn - 0.45) / 0.35, 0, 1) + 0.25 * clamp((0.3 - tel.fn) / 0.2, 0, 1);
+    const aft = -0.7 * clamp((tel.fn - 0.45) / 0.35, 0, 1) - 0.2 * clamp((tel.fn - 0.8) / 0.3, 0, 1) + 0.25 * clamp((0.3 - tel.fn) / 0.2, 0, 1);
     c.crewFwd = aft;
     c.helmFwd = aft * 0.8;
   }

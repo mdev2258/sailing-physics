@@ -1,7 +1,7 @@
 {
   "name": "sailing-physics",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "3D physics sim of an ISO dinghy: wind, waves, tide, weather and every boat control as variables.",
   "type": "module",
   "scripts": {

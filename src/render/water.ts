@@ -47,6 +47,8 @@ const frag = /* glsl */ `
   uniform vec4 uGust[4];      // kx, kz, phaseNow, _
   uniform float uGustAmp;
   uniform float uRipple;
+  uniform vec2 uBoat;
+  uniform float uClear;
   varying vec3 vWorld;
   varying vec3 vNormal;
   varying float vSlope;
@@ -81,7 +83,9 @@ const frag = /* glsl */ `
     float d = length(cameraPosition - vWorld);
     float f = 1.0 - exp(-uFogDensity * uFogDensity * d * d);
     col = mix(col, uFogColor, clamp(f, 0.0, 1.0));
-    gl_FragColor = vec4(col, 1.0);
+    // layers that live under the surface: let the water go glassy round the boat
+    float a = 1.0 - uClear * (1.0 - smoothstep(3.5, 9.0, distance(vWorld.xz, uBoat)));
+    gl_FragColor = vec4(col, a);
   }
 `;
 
@@ -116,6 +120,8 @@ function buildGrid(N = 384, R = 1500, a = 0.06): THREE.BufferGeometry {
 
 export class Water {
   mesh: THREE.Mesh;
+  /** Dark water below, seen only when the surface is made glassy for the under-water layers. */
+  deep: THREE.Mesh;
   uniforms: Record<string, THREE.IUniform>;
 
   constructor() {
@@ -133,14 +139,27 @@ export class Water {
       uGust: { value: Array.from({ length: 4 }, () => new THREE.Vector4()) },
       uGustAmp: { value: 0.3 },
       uRipple: { value: 1 },
+      uBoat: { value: new THREE.Vector2() },
+      uClear: { value: 0 },
     };
     const mat = new THREE.ShaderMaterial({ vertexShader: vert, fragmentShader: frag, uniforms: this.uniforms });
     this.mesh = new THREE.Mesh(buildGrid(), mat);
     this.mesh.frustumCulled = false;
+    this.mesh.renderOrder = -1;
+    this.deep = new THREE.Mesh(new THREE.CircleGeometry(16, 48), new THREE.MeshBasicMaterial({ color: 0x0a2733, fog: false }));
+    this.deep.rotation.x = -Math.PI / 2;
+    this.deep.visible = false;
   }
 
   /** Push the current wave/gust state; phases are folded on the CPU in double precision. */
-  update(waves: WaveField, wind: WindField, t: number, centerX: number, centerZ: number, windKn: number) {
+  update(waves: WaveField, wind: WindField, t: number, centerX: number, centerZ: number, windKn: number, clear = 0) {
+    (this.uniforms.uBoat.value as THREE.Vector2).set(centerX, centerZ);
+    this.uniforms.uClear.value = clear;
+    const mat = this.mesh.material as THREE.ShaderMaterial;
+    // glassy, and drawn from underneath too, so the camera can go below and look up at the hull
+    if (mat.transparent !== clear > 0) { mat.transparent = clear > 0; mat.depthWrite = clear === 0; mat.side = clear > 0 ? THREE.DoubleSide : THREE.FrontSide; mat.needsUpdate = true; }
+    this.deep.visible = clear > 0;
+    this.deep.position.set(centerX, -2.6, centerZ);
     const snap = 0.5;
     this.mesh.position.set(Math.round(centerX / snap) * snap, 0, Math.round(centerZ / snap) * snap);
     const arr = this.uniforms.uWave.value as THREE.Vector4[];
