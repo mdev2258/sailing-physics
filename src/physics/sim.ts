@@ -3,21 +3,35 @@ import { Environment } from './environment';
 import { applyAssists, newAssistState, type AssistState } from './assist';
 import { defaultParams, type SimParams } from './params';
 import { wrap360 } from './math';
+import { FIDELITY, type FidelityLevel } from './fidelity';
 
 /** Fixed-timestep simulation: environment + boat + assists. Pure — runs in the browser or Node. */
 export class Simulation {
   env: Environment;
   boat: Boat;
   t = 0;
-  readonly dt = 1 / 200;
+  dt = 1 / 200;
   assist: AssistState = newAssistState();
   private acc = 0;
   private steps = 0;
 
   constructor(public params: SimParams = defaultParams()) {
     this.env = new Environment(params);
-    this.boat = new Boat(params.setup);
+    this.boat = new Boat(params.setup, FIDELITY[params.fidelity]);
+    this.dt = 1 / FIDELITY[params.fidelity].hz;
     this.reset();
+  }
+
+  /** Re-cut the boat at another resolution and carry on from where she is (same place, heading and speed). */
+  setFidelity(level: FidelityLevel) {
+    const old = this.boat;
+    this.params.fidelity = level;
+    this.env.update(this.params, this.t, old.pos.x, old.pos.z, true);
+    this.boat = new Boat(this.params.setup, FIDELITY[level]);
+    this.dt = 1 / FIDELITY[level].hz;
+    const stw = old.tel ? old.tel.stwKn * 0.514444 : 0;
+    this.boat.reset(this.env, old.tel ? old.tel.headingDeg : 0, old.pos.x, old.pos.z, this.params.controls, stw);
+    this.acc = 0;
   }
 
   /** Restart at the origin. Default heading: starboard tack, 60° off the true wind. */

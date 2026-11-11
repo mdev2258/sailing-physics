@@ -1,4 +1,5 @@
 // Every variable the sim exposes. The UI mutates these objects directly; the sim reads them each step.
+import type { FidelityLevel } from './fidelity';
 
 export interface WindParams {
   speedKn: number; // mean true wind at 10 m
@@ -94,6 +95,8 @@ export interface BoatSetup {
 }
 
 export interface SimParams {
+  /** How finely the boat is cut up (see fidelity.ts). Change it with Simulation.setFidelity(). */
+  fidelity: FidelityLevel;
   wind: WindParams;
   weather: WeatherParams;
   waves: WaveParams;
@@ -105,6 +108,7 @@ export interface SimParams {
 /** Defaults: a pleasant 12 kt northerly in Chichester Harbour an hour before HW. */
 export function defaultParams(): SimParams {
   return {
+    fidelity: 'laptop',
     // Wind from true north by default, steady in direction, so north-up views read like a points-of-sail diagram.
     wind: { speedKn: 12, fromDeg: 0, gustiness: 0.25, gustScaleM: 80, shiftAmpDeg: 0, shiftPeriodS: 90, gradientExp: 1 / 7 },
     weather: { airTempC: 14, pressureHPa: 1013, humidityPct: 75, waterTempC: 13, salinityPSU: 33, rain: 0, fog: 0, cloud: 0.3 },

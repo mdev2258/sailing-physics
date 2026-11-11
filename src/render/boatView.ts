@@ -200,10 +200,9 @@ class SailView {
     const NR = this.NR, NC = this.NC;
     const side = s.angle >= 0 ? 1 : -1;
     const ax = s.axis;
-    const n = s.strips.length;
     const pressure = look.sailPressure;
     // luffing flutter when the sail is near zero angle of attack
-    const luff = clamp(1 - s.alphaMid / (s.luffTol * 1.2), 0, 1);
+    const luff = clamp(1 - Math.abs(s.alphaMid) / (s.luffTol * 1.2), 0, 1);
     for (let i = 0; i <= NR; i++) {
       const u = (i / NR) * hoist;
       const sec = s.section(Math.min(u, 0.999));
@@ -212,13 +211,13 @@ class SailView {
       let nx = ax[1] * c[2] - ax[2] * c[1], ny = ax[2] * c[0] - ax[0] * c[2], nz = ax[0] * c[1] - ax[1] * c[0];
       const nl = Math.hypot(nx, ny, nz) || 1;
       nx = (nx / nl) * side; ny = (ny / nl) * side; nz = (nz / nl) * side;
-      const k = clamp(Math.round(u * n - 0.5), 0, n - 1);
+      const k = s.stripIndex(Math.min(u, 0.999));
       let load = 0, shareI = 0.5, fs = 1, lf = 0;
       if (pressure) {
         const f = s.flow[k];
         const q = 0.6125 * (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
         load = (s.cl[k] * q) / Math.max(qRef, 1);
-        const a = Math.min(s.alpha[k], 0.6), a0 = 1.85 * s.depths[k];
+        const a = Math.min(Math.abs(s.alpha[k]), 0.6), a0 = 1.85 * s.depths[k];
         shareI = a / (a + a0);
         fs = s.fs[k]; lf = s.luff[k];
       }

@@ -1,8 +1,10 @@
 import { Matrix3, Quaternion, Vector3 } from 'three';
 import { DEG, G, bearingOf, clamp, interp, lerp, smoothstep, towards, wrap180 } from './math';
-import { CELL_GRID, COCKPIT, HULL, buildCells, buildPanels, halfBreadth, hullPoint, keelSlope, keelY, sheerY, type Cell, type Panel } from './hull';
-import { foilSection, newSectionOut, sailOptAlpha, sailSection, type FoilSection, type SailShape, type SectionOut } from './sections';
+import { COCKPIT, HULL, buildCells, buildPanels, halfBreadth, hullPoint, keelSlope, keelY, sheerY, type Cell, type Panel } from './hull';
+import { foilSection, sailOptAlpha, sailSection, type FoilSection, type SailShape } from './sections';
 import { VortexSystem } from './vortex';
+import { LiftingSet } from './lifting';
+import { FIDELITY, spanSpacing, type Fidelity } from './fidelity';
 import { PLANING_CP_SHIFT, planingScale, sectionAddedMass, solve6 } from './planing';
 import type { Environment } from './environment';
 import type { BoatSetup, ControlParams } from './params';
@@ -17,8 +19,8 @@ export const RIG = {
   mastX: 2.85,
   mastHeight: 6.3, // above deck
   boomAbove: 0.85,
-  board: { x: 2.7, span: 1.0, chord: 0.3, strips: 8 },
-  rudder: { x: -0.1, span: 0.8, chord: 0.24, strips: 6, maxDeg: 35 },
+  board: { x: 2.7, span: 1.0, chord: 0.3 },
+  rudder: { x: -0.1, span: 0.8, chord: 0.24, maxDeg: 35 },
   spritLength: 1.15,
 };
 const MAST_DECK_Y = deckAt(RIG.mastX);
@@ -65,9 +67,8 @@ interface SailDef {
   name: 'main' | 'jib' | 'gennaker';
   p0: V3; // luff bottom (tack / gooseneck)
   p1: V3; // luff top (head)
-  strips: number;
   shape: (u: number) => number; // chord distribution (relative)
-  inertia: number; // about the luff axis, kg·m²
+  inertia: number; // of boom and cloth about the luff axis, kg·m² (the air that swings with them is added)
   stopDeg: number; // hard stop (shrouds / forestay)
   sheetRange: [number, number]; // sheet 0 → first, sheet 1 → second (deg)
   cd0: number; // section friction + mast / luff interference
@@ -75,22 +76,25 @@ interface SailDef {
   luffHold: number; // lift kept when luffing (battens)
 }
 
-export interface SailStrip { u: number; p: V3; chord: number; area: number }
+export interface SailStrip { u: number; du: number; p: V3; chord: number; area: number }
 
 const v3 = (): V3 => [0, 0, 0];
 const v3s = (n: number): V3[] => Array.from({ length: n }, v3);
+const nums = (n: number, x: number) => new Array<number>(n).fill(x);
 
 export class SailRuntime {
   angle = 0; // rotation about the luff axis, + = clew to starboard
   rate = 0;
   axis: V3;
   strips: SailStrip[] = [];
+  /** Height fractions of the strip boundaries (n + 1 of them, 0 = foot, 1 = head). */
+  edges: number[] = [];
   /** First element of this sail in the boat's air vortex system. */
   idx0 = 0;
   luffLen = 1;
   private c0 = 1;
   // ---- per strip (index 0 = foot) ----
-  /** Effective angle of attack the section sees (rad): free stream + everything the vortices induce. */
+  /** Effective angle of attack the section sees (rad): free stream + everything the vortices induce, with Wagner's lag. Negative = backed. */
   alpha: number[] = [];
   /** Effective flow at the strip (body frame, air relative to the sail). */
   flow: V3[] = [];
@@ -112,6 +116,10 @@ export class SailRuntime {
   relB: V3[] = [];
   fwB: V3[] = [];
   depths: number[] = [];
+  /** The wake each strip leaves once its flow has separated: drag width (m), half-width at the leech (m), and how much the wind in it is slowed here (for the strips of other sails). */
+  wakeD: number[] = [];
+  wakeB0: number[] = [];
+  shadow: number[] = [];
   // ---- whole sail ----
   alphaMid = 0;
   force: V3 = [0, 0, 0]; // world, total
@@ -125,12 +133,12 @@ export class SailRuntime {
   submerged = 0;
   flying = true;
   cImp = 0;
-  constructor(public def: SailDef, public area: number) {
+  constructor(public def: SailDef, public area: number, public n: number) {
     this.axis = [0, 1, 0];
     this.setAxis();
     this.rebuild(area);
   }
-  get mid() { return this.strips.length >> 1; }
+  get mid() { return this.n >> 1; }
   setAxis() {
     const a = sub(this.def.p1, this.def.p0);
     const len = norm(a);
@@ -143,24 +151,32 @@ export class SailRuntime {
     const len = norm(sub(d.p1, d.p0));
     // chord is horizontal aft; strip area = chord × luff segment × sin(angle between them)
     const sinA = Math.sqrt(1 - (this.axis[0] * -1) ** 2);
-    const n = d.strips;
+    const n = this.n;
+    this.edges = Array.from({ length: n + 1 }, (_, j) => spanSpacing(j / n));
+    const us = Array.from({ length: n }, (_, i) => spanSpacing((i + 0.5) / n));
     let sum = 0;
-    for (let i = 0; i < n; i++) sum += d.shape((i + 0.5) / n);
-    const c0 = area / ((sum / n) * len * sinA);
+    for (let i = 0; i < n; i++) sum += d.shape(us[i]) * (this.edges[i + 1] - this.edges[i]);
+    const c0 = area / (sum * len * sinA);
     this.c0 = c0;
     this.strips = [];
     for (let i = 0; i < n; i++) {
-      const u = (i + 0.5) / n;
+      const u = us[i], du = this.edges[i + 1] - this.edges[i];
       const chord = c0 * d.shape(u);
-      this.strips.push({ u, p: lerp3(d.p0, d.p1, u), chord, area: (chord * len * sinA) / n });
+      this.strips.push({ u, du, p: lerp3(d.p0, d.p1, u), chord, area: chord * len * sinA * du });
     }
-    const num = (x: number) => new Array<number>(n).fill(x);
-    this.alpha = num(0); this.fs = num(1); this.luff = num(0); this.cl = num(0); this.cd = num(0); this.xcp = num(0.4);
-    this.wet = num(0); this.depths = num(0.12);
+    this.alpha = nums(n, 0); this.fs = nums(n, 1); this.luff = nums(n, 0); this.cl = nums(n, 0); this.cd = nums(n, 0); this.xcp = nums(n, 0.4);
+    this.wet = nums(n, 0); this.depths = nums(n, 0.12); this.wakeD = nums(n, 0); this.wakeB0 = nums(n, 0); this.shadow = nums(n, 0);
     this.flow = v3s(n); this.flowInf = v3s(n); this.stripForce = v3s(n); this.stripAt = v3s(n);
     this.cdir = v3s(n); this.relB = v3s(n); this.fwB = v3s(n);
   }
   chordAt(u: number): number { return this.c0 * this.def.shape(u); }
+  /** Which strip covers height fraction u. */
+  stripIndex(u: number): number {
+    const e = this.edges;
+    let lo = 0, hi = this.n - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (e[m] <= u) lo = m; else hi = m - 1; }
+    return lo;
+  }
   /** Chord unit vector (body frame) at height fraction u. */
   chordDir(u: number, out: V3): V3 {
     const side = this.angle >= 0 ? 1 : -1;
@@ -168,17 +184,34 @@ export class SailRuntime {
   }
   /** Section shape of strip i, as the section model wants it. */
   shapeOf(i: number): SailShape {
-    const d = this.def;
-    return { depth: this.depths[i], luffTol: this.luffTol, cd0: d.cd0, clScale: d.clScale, luffHold: d.luffHold };
+    const d = this.def, o = this.shapeTmp;
+    o.depth = this.depths[i]; o.luffTol = this.luffTol; o.cd0 = d.cd0; o.clScale = d.clScale; o.luffHold = d.luffHold;
+    return o;
   }
+  private shapeTmp: SailShape = { depth: 0.12, luffTol: 0.1, cd0: 0.02 };
   /** Best working angle of attack for the middle of the sail (what auto-trim aims for). */
   optAlpha(): number { return sailOptAlpha(this.depths[this.mid], this.luffTol, this.def.clScale); }
+  /**
+   * The air that has to move when the sail does: added mass of each strip normal to itself,
+   * π/4·ρ·c² per metre of span, less what leaks round the ends of a sail this stubby. Returns the total (kg)
+   * and its moment of inertia about the luff (kg·m²), which is what makes a boom feel heavy in a gybe.
+   */
+  airMass(rhoA: number, scale: number): { m: number; iLuff: number } {
+    let m = 0, iLuff = 0;
+    const ar = (this.luffLen * this.luffLen) / Math.max(this.area, 0.1);
+    const k3 = ar / (ar + 2);
+    for (const st of this.strips) {
+      const ds = this.luffLen * st.du;
+      const a = k3 * rhoA * (Math.PI / 4) * st.chord * st.chord * ds * scale;
+      m += a;
+      iLuff += a * (0.5 * st.chord) ** 2 + (a * st.chord * st.chord) / 32;
+    }
+    return { m, iLuff };
+  }
   /** Geometry for rendering: luff point, chord vector (incl. length) and camber depth at u. */
   section(u: number): { p: V3; c: V3; chord: number; depth: number } {
     const d = this.def;
-    const n = d.strips;
-    const k = clamp(Math.round(u * n - 0.5), 0, n - 1);
-    return { p: lerp3(d.p0, d.p1, u), c: this.chordDir(u, [0, 0, 0]), chord: this.chordAt(u), depth: this.depths[k] };
+    return { p: lerp3(d.p0, d.p1, u), c: this.chordDir(u, [0, 0, 0]), chord: this.chordAt(u), depth: this.depths[this.stripIndex(u)] };
   }
 }
 
@@ -187,11 +220,14 @@ export class FoilRuntime {
   idx0 = 0;
   x = 0; yTop = 0; span = 0; chord = 0;
   cdir: V3 = [-1, 0, 0];
+  /** Depth fractions down the span: strip boundaries (n + 1) and strip centres. */
+  edges: number[]; us: number[];
   alpha: number[]; fs: number[]; imm: number[]; cl: number[];
   flow: V3[]; flowInf: V3[]; stripForce: V3[]; stripAt: V3[];
   constructor(public name: 'board' | 'rudder', public n: number, public section: FoilSection) {
-    const num = (x: number) => new Array<number>(n).fill(x);
-    this.alpha = num(0); this.fs = num(1); this.imm = num(0); this.cl = num(0);
+    this.edges = Array.from({ length: n + 1 }, (_, j) => spanSpacing(j / n));
+    this.us = Array.from({ length: n }, (_, i) => spanSpacing((i + 0.5) / n));
+    this.alpha = nums(n, 0); this.fs = nums(n, 1); this.imm = nums(n, 0); this.cl = nums(n, 0);
     this.flow = v3s(n); this.flowInf = v3s(n); this.stripForce = v3s(n); this.stripAt = v3s(n);
   }
 }
@@ -209,17 +245,17 @@ function makeSailDefs(rakeDeg: number): SailDef[] {
   const genHead = mp(5.8);
   return [
     {
-      name: 'main', p0: mp(RIG.boomAbove), p1: mp(RIG.mastHeight), strips: 12,
+      name: 'main', p0: mp(RIG.boomAbove), p1: mp(RIG.mastHeight),
       shape: (u) => 0.15 + 0.85 * Math.sqrt(Math.max(0, 1 - u * u)), inertia: 6, stopDeg: 88, sheetRange: [85, 3],
       cd0: 0.022, clScale: 1, luffHold: 0.3,
     },
     {
-      name: 'jib', p0: [L - 0.15, tackY, 0], p1: [hounds[0] + 0.05, hounds[1], 0], strips: 8,
+      name: 'jib', p0: [L - 0.15, tackY, 0], p1: [hounds[0] + 0.05, hounds[1], 0],
       shape: (u) => 0.05 + 0.95 * (1 - u), inertia: 0.8, stopDeg: 75, sheetRange: [60, 10],
       cd0: 0.014, clScale: 1, luffHold: 0.12,
     },
     {
-      name: 'gennaker', p0: [L + RIG.spritLength, tackY + 0.05, 0], p1: [genHead[0] + 0.12, genHead[1], 0], strips: 10,
+      name: 'gennaker', p0: [L + RIG.spritLength, tackY + 0.05, 0], p1: [genHead[0] + 0.12, genHead[1], 0],
       shape: (u) => 0.2 + 0.8 * Math.sqrt(Math.max(0, 1 - u * u)), inertia: 1.5, stopDeg: 125, sheetRange: [110, 20],
       // max lift ≈1.4 on the whole sail, in line with published asymmetric-spinnaker coefficients (ORC VPP)
       cd0: 0.05, clScale: 0.95, luffHold: 0.05,
@@ -276,42 +312,6 @@ class ForceAcc {
   }
 }
 
-interface StripKin { speed: number; alpha: number; un: number; cperp: number; v: V3; n: V3; kj: V3; gsign: number }
-const newKin = (): StripKin => ({ speed: 0, alpha: 0, un: 0, cperp: 1, v: [0, 0, 0], n: [0, 0, 1], kj: [0, 0, 0], gsign: 1 });
-
-/**
- * Kinematics of one lifting strip. flow = fluid velocity relative to the surface; span and chord are unit
- * vectors (chord = leading edge → trailing edge). Fills in the flow speed and direction in the section
- * plane, the angle of attack (0..π), the section normal, the Kutta–Joukowski direction v × span and the
- * sign of circulation that lifts towards the side the flow is pushing.
- */
-function stripKin(flow: ArrayLike<number>, span: ArrayLike<number>, chord: ArrayLike<number>, k: StripKin): boolean {
-  const fs = flow[0] * span[0] + flow[1] * span[1] + flow[2] * span[2];
-  const ux = flow[0] - fs * span[0], uy = flow[1] - fs * span[1], uz = flow[2] - fs * span[2];
-  const speed = Math.hypot(ux, uy, uz);
-  k.speed = speed;
-  if (speed < 1e-4) return false;
-  const cs = chord[0] * span[0] + chord[1] * span[1] + chord[2] * span[2];
-  let cx = chord[0] - cs * span[0], cy = chord[1] - cs * span[1], cz = chord[2] - cs * span[2];
-  const cl = Math.hypot(cx, cy, cz) || 1;
-  k.cperp = cl;
-  cx /= cl; cy /= cl; cz /= cl;
-  const nx = cy * span[2] - cz * span[1], ny = cz * span[0] - cx * span[2], nz = cx * span[1] - cy * span[0];
-  const un = ux * nx + uy * ny + uz * nz;
-  const uc = ux * cx + uy * cy + uz * cz;
-  k.un = un;
-  k.alpha = Math.atan2(Math.abs(un), uc);
-  const vx = ux / speed, vy = uy / speed, vz = uz / speed;
-  k.v[0] = vx; k.v[1] = vy; k.v[2] = vz;
-  k.n[0] = nx; k.n[1] = ny; k.n[2] = nz;
-  // lift acts along ± (v × span); pick the sign that points to the side the flow pushes the surface
-  const kx = vy * span[2] - vz * span[1], ky = vz * span[0] - vx * span[2], kz = vx * span[1] - vy * span[0];
-  k.kj[0] = kx; k.kj[1] = ky; k.kj[2] = kz;
-  const sg = un >= 0 ? 1 : -1;
-  k.gsign = sg * (nx * kx + ny * ky + nz * kz) >= 0 ? 1 : -1;
-  return true;
-}
-
 // ---------- Boat ----------
 
 export class Boat {
@@ -342,24 +342,33 @@ export class Boat {
   private setupKey = '';
   centres: Centres = { cg: [0, 0, 0], cb: [0, 0, 0], ce: null, clr: null, meta: null, planing: null, gzM: 0, rightingNm: 0, leadM: 0, geoLeadM: 0 };
   /** Buoyancy carried by each hull station (N) and where it acts (world): shows the wedge shifting as she heels. */
-  stBuoy = new Float64Array(CELL_GRID.ns);
-  stBuoyAt: V3[] = v3s(CELL_GRID.ns);
+  stBuoy: Float64Array;
+  stBuoyAt: V3[];
   /** Immersed depth of each station (m): whole section, and port / starboard halves. */
-  stDepth = new Float64Array(CELL_GRID.ns);
-  sideDepth = [new Float64Array(CELL_GRID.ns), new Float64Array(CELL_GRID.ns)];
+  stDepth: Float64Array;
+  sideDepth: Float64Array[];
   /** Planing force on each station (N, + = lifting), port and starboard halves of the bottom. */
-  planingStrip = [new Float64Array(CELL_GRID.ns), new Float64Array(CELL_GRID.ns)];
+  planingStrip: Float64Array[];
   /** Where each of those acts (body frame). */
-  planingAt: V3[][] = [v3s(CELL_GRID.ns), v3s(CELL_GRID.ns)];
-  private plFlux = new Float64Array(CELL_GRID.ns);
-  private plWet = new Float64Array(CELL_GRID.ns);
-  private plHb = new Float64Array(CELL_GRID.ns);
-  private plU = new Float64Array(CELL_GRID.ns);
+  planingAt: V3[][];
+  private plFlux: Float64Array;
+  private plWet: Float64Array;
+  private plHb: Float64Array;
+  private plU: Float64Array;
+  /** Hull grid in use (from the fidelity level). */
+  readonly grid: Fidelity['cells'];
+  /** The two sets of lifting strips: sails in the air, foils in the water. */
+  airSet: LiftingSet;
+  waterSet: LiftingSet;
   /** Weight of each mass item (body-frame position, kg), for the force ledger. */
   massItems: Array<{ id: string; label: string; m: number; p: V3 }> = [];
   private clrBody: V3 | null = null;
   private latFilt: V3 = [0, 0, 0];
   private etaCol: Float64Array;
+  /** Pressure footprint on the water: the vertical force each column of the hull is putting on it (N) and where (level axes about the CG). */
+  private colF: Float64Array;
+  private colX: Float64Array;
+  private colZ: Float64Array;
   private inertia = new Matrix3();
   private ampSum = 0;
   private stepCount = 0;
@@ -371,8 +380,6 @@ export class Boat {
   private T = [0, 0, 0];
   private w3 = new Float64Array(3);
   private air = new Float64Array(3);
-  private sec: SectionOut = newSectionOut();
-  private kin: StripKin = newKin();
   private M6 = new Float64Array(36);
   private b6 = new Float64Array(6);
   private acc = {
@@ -391,19 +398,32 @@ export class Boat {
     ground: new ForceAcc('ground', 'Seabed', 'contact'),
   };
 
-  constructor(public setup: BoatSetup) {
-    this.cells = buildCells();
-    this.etaCol = new Float64Array(CELL_GRID.ns * CELL_GRID.nz);
-    this.panels = buildPanels();
+  constructor(public setup: BoatSetup, public fid: Fidelity = FIDELITY.laptop) {
+    const g = fid.cells;
+    this.grid = g;
+    this.cells = buildCells(g.ns, g.nv, g.nz);
+    this.etaCol = new Float64Array(g.ns * g.nz);
+    this.colF = new Float64Array(g.ns * g.nz);
+    this.colX = new Float64Array(g.ns * g.nz);
+    this.colZ = new Float64Array(g.ns * g.nz);
+    this.panels = buildPanels(fid.panels.ns, fid.panels.nt);
+    const f64 = () => new Float64Array(g.ns);
+    this.stBuoy = f64(); this.stBuoyAt = v3s(g.ns); this.stDepth = f64(); this.sideDepth = [f64(), f64()];
+    this.planingStrip = [f64(), f64()]; this.planingAt = [v3s(g.ns), v3s(g.ns)];
+    this.plFlux = f64(); this.plWet = f64(); this.plHb = f64(); this.plU = f64();
+    void this.colF; void this.colX; void this.colZ;
     const defs = makeSailDefs(setup.mastRakeDeg);
-    this.sails = [new SailRuntime(defs[0], setup.mainAreaM2), new SailRuntime(defs[1], setup.jibAreaM2), new SailRuntime(defs[2], setup.gennakerAreaM2)];
+    const st = fid.strips;
+    this.sails = [new SailRuntime(defs[0], setup.mainAreaM2, st.main), new SailRuntime(defs[1], setup.jibAreaM2, st.jib), new SailRuntime(defs[2], setup.gennakerAreaM2, st.gennaker)];
     let n = 0;
-    for (const s of this.sails) { s.idx0 = n; n += s.strips.length; }
+    for (const sl of this.sails) { sl.idx0 = n; n += sl.n; }
     this.aero = new VortexSystem(n);
     this.aero.kappa.fill(1); // the sea is a wall under the sails
-    this.foils = [new FoilRuntime('board', RIG.board.strips, BOARD_SECTION), new FoilRuntime('rudder', RIG.rudder.strips, RUDDER_SECTION)];
+    this.airSet = new LiftingSet(this.aero);
+    this.foils = [new FoilRuntime('board', st.board, BOARD_SECTION), new FoilRuntime('rudder', st.rudder, RUDDER_SECTION)];
     this.foils[1].idx0 = this.foils[0].n;
     this.hydro = new VortexSystem(this.foils[0].n + this.foils[1].n);
+    this.waterSet = new LiftingSet(this.hydro);
   }
 
   get main() { return this.sails[0]; }
@@ -567,8 +587,8 @@ export class Boat {
     if (c && c.side !== 'auto') this.side = c.side === 'starboard' ? 1 : -1; // a manual side wins
     for (const s of this.sails) { s.angle = -this.side * 20 * DEG; s.rate = 0; s.fs.fill(1); s.sheetLoadN = 0; }
     for (const f of this.foils) f.fs.fill(1);
-    this.aero.gamma.fill(0);
-    this.hydro.gamma.fill(0);
+    this.airSet.reset();
+    this.waterSet.reset();
     if (c) {
       const t = this.crewTargets(c);
       this.helm.set(...t.helm); this.crew.set(...t.crew);
@@ -807,7 +827,7 @@ export class Boat {
     const flux = this.plFlux, plW = this.plWet, plH = this.plHb, plU = this.plU;
     for (const pf of this.planingStrip) pf.fill(0);
     if (u > 0.3) {
-      const NS = CELL_GRID.ns, dx = L / NS;
+      const NS = this.grid.ns, dx = L / NS;
       const fade = smoothstep(0.35, 0.9, u / Math.sqrt(G * PLANING_BEAM));
       const heelDeg = heel / DEG;
       for (let sd = 0; sd < 2 && fade > 0; sd++) {
@@ -963,7 +983,7 @@ export class Boat {
     for (const s of [0.1, 0.35, 0.6, 0.85]) contact([s * L, keelY(s), 0]);
 
     // ---- integrate: 6-DOF rigid body + the water's added mass ----
-    const munk = this.integrate(dt, waterAtCg, cbBody, rhoW * vSub, rhoW, bSpan, bTop);
+    const munk = this.integrate(dt, waterAtCg, cbBody, rhoW * vSub, rhoW, rhoA, bSpan, bTop);
 
     for (const k in A) {
       const a = A[k as keyof typeof A];
@@ -981,10 +1001,9 @@ export class Boat {
    * lose lift, and the hull bottom acts as an end plate. Returns [ΣFz, ΣFz·x, ΣFz·y] in the body frame.
    */
   private solveFoils(dt: number, t: number, env: Environment, bSpan: number, bTop: number, amp: number): V3 {
-    const sys = this.hydro, rhoW = env.rhoWater, A = this.acc;
-    const p = [0, 0, 0], v = [0, 0, 0], tmp = [0, 0, 0], fw = [0, 0, 0], ind = [0, 0, 0], V = [0, 0, 0];
-    const wv = this.w3, kin = this.kin, sec = this.sec;
-    const up: V3 = [0, 1, 0];
+    const sys = this.hydro, set = this.waterSet, rhoW = env.rhoWater, A = this.acc;
+    const p = [0, 0, 0], v = [0, 0, 0], tmp = [0, 0, 0], fw = [0, 0, 0];
+    const wv = this.w3;
     const [board, rud] = this.foils;
     board.x = RIG.board.x; board.yTop = bTop; board.span = bSpan; board.chord = RIG.board.chord; board.cdir = [-1, 0, 0];
     const rd = this.rudder;
@@ -992,16 +1011,17 @@ export class Boat {
     sys.planeP = [0, 0.04, 0]; sys.planeN = [0, 1, 0];
     // geometry + free stream
     for (const f of this.foils) {
-      const ds = f.span / f.n;
       const on = f.span > 0.02;
       // how well the hull seals the root: a board under the hull is end-plated, a transom-hung rudder
       // half so (the surface just behind the transom gives way), and neither if the root is in the air
       this.toWorldPoint([f.x, f.yTop, 0], p);
       const rootDepth = p[1] > amp ? -1 : env.waves.elevation(p[0], p[2], t) - p[1];
       const seal = (f.name === 'board' ? 0.9 : 0.5) * smoothstep(-0.02, 0.05, rootDepth);
+      const c = f.cdir, half = 0.5 * f.chord;
       for (let i = 0; i < f.n; i++) {
         const el = f.idx0 + i, k = 3 * el;
-        const y = f.yTop - (i + 0.5) * ds;
+        const y = f.yTop - f.span * f.us[i];
+        const ds = f.span * (f.edges[i + 1] - f.edges[i]);
         this.toWorldPoint([f.x, y, 0], p);
         let imm = 0;
         if (on && p[1] <= amp) {
@@ -1015,14 +1035,19 @@ export class Boat {
           tmp[0] = wv[0] - v[0]; tmp[1] = wv[1] - v[1]; tmp[2] = wv[2] - v[2];
           this.toBodyDir(tmp, fi);
         } else fi[0] = fi[1] = fi[2] = 0;
-        sys.a[k] = f.x; sys.a[k + 1] = y - ds / 2; sys.a[k + 2] = 0;
-        sys.b[k] = f.x; sys.b[k + 1] = y + ds / 2; sys.b[k + 2] = 0;
-        sys.chordDir[k] = f.cdir[0]; sys.chordDir[k + 1] = f.cdir[1]; sys.chordDir[k + 2] = f.cdir[2];
+        // bound vortex on the quarter-chord line (a = deeper end), control point half a chord aft of it
+        sys.a[k] = f.x; sys.a[k + 1] = f.yTop - f.span * f.edges[i + 1]; sys.a[k + 2] = 0;
+        sys.b[k] = f.x; sys.b[k + 1] = f.yTop - f.span * f.edges[i]; sys.b[k + 2] = 0;
+        sys.bp[k] = f.x; sys.bp[k + 1] = y; sys.bp[k + 2] = 0;
+        sys.cp[k] = f.x + c[0] * half; sys.cp[k + 1] = y; sys.cp[k + 2] = c[2] * half;
+        sys.chordDir[k] = c[0]; sys.chordDir[k + 1] = c[1]; sys.chordDir[k + 2] = c[2];
         sys.chord[el] = f.chord;
         sys.core2[el] = (0.2 * ds) ** 2 + 1e-5;
         sys.kappa[el] = seal;
         sys.active[el] = imm > 0.02 ? 1 : 0;
-        if (!sys.active[el]) sys.gamma[el] = 0;
+        set.span[k] = 0; set.span[k + 1] = 1; set.span[k + 2] = 0;
+        set.chordP[el] = f.chord; set.ds[el] = ds; set.live[el] = imm; set.area[el] = f.chord * ds * imm;
+        set.vinf[k] = fi[0]; set.vinf[k + 1] = fi[1]; set.vinf[k + 2] = fi[2];
       }
       // trailing legs leave each node along the local stream (node j sits above strip j)
       for (let j = 0; j <= f.n; j++) {
@@ -1034,39 +1059,29 @@ export class Boat {
         if (j > 0) { const k = 3 * (f.idx0 + j - 1); sys.da[k] = dx; sys.da[k + 1] = dy; sys.da[k + 2] = dz; }
       }
     }
-    if (this.stepCount % 2 === 1) sys.buildInfluence();
-    // solve each strip against the field of all the others
+    if ((this.stepCount + 1) % this.fid.aeroEvery === 0 || this.stepCount < 3) sys.buildInfluence();
+    // all strips solved against each other
+    const nu = env.nuWater;
+    set.solve(dt, rhoW, (el, alpha, _side, speed, out, probe) => {
+      const f = el < rud.idx0 ? board : rud, i = el - f.idx0;
+      foilSection(alpha, (speed * f.chord) / nu, f.section, out, f.fs[i]);
+      // dynamic stall: separation takes a few chord lengths of travel to spread, longer to re-attach
+      if (!probe) f.fs[i] += (out.fs - f.fs[i]) * (1 - Math.exp((-dt * Math.max(speed / f.chord, 4)) / (out.fs < f.fs[i] ? 3 : 6)));
+    });
     let latF = 0, latX = 0, latY = 0;
     for (const f of this.foils) {
-      const ds = f.span / f.n;
       const acc = f.name === 'board' ? A.board : A.rudder;
       for (let i = 0; i < f.n; i++) {
-        const el = f.idx0 + i;
+        const el = f.idx0 + i, k = 3 * el;
         const sf = f.stripForce[i], at = f.stripAt[i], fl = f.flow[i];
-        const y = f.yTop - (i + 0.5) * ds;
-        sf[0] = sf[1] = sf[2] = 0;
+        const y = f.yTop - f.span * f.us[i];
         at[0] = f.x; at[1] = y; at[2] = 0;
-        fl[0] = fl[1] = fl[2] = 0;
-        const imm = f.imm[i];
-        if (!sys.active[el]) { f.alpha[i] = 0; f.cl[i] = 0; f.fs[i] = 1; continue; }
-        sys.inducedAt(el, ind);
-        const fi = f.flowInf[i];
-        V[0] = fi[0] + ind[0]; V[1] = fi[1] + ind[1]; V[2] = fi[2] + ind[2];
-        fl[0] = V[0]; fl[1] = V[1]; fl[2] = V[2];
-        if (!stripKin(V, up, f.cdir, kin)) continue;
-        const sp = kin.speed;
-        foilSection(kin.alpha, (sp * f.chord) / env.nuWater, f.section, sec, f.fs[i]);
-        // separation and circulation both take a few chord lengths of travel to catch up
-        const rate = Math.max(sp / f.chord, 4);
-        f.fs[i] += (sec.fs - f.fs[i]) * (1 - Math.exp((-dt * rate) / (sec.fs < f.fs[i] ? 3 : 6)));
-        const gT = kin.gsign * 0.5 * sp * f.chord * sec.cl * imm;
-        sys.gamma[el] += (gT - sys.gamma[el]) * (1 - Math.exp((-dt * rate) / 2));
-        const lift = rhoW * sys.gamma[el] * sp * ds;
-        const drag = 0.5 * rhoW * sp * sp * f.chord * ds * imm * sec.cd;
-        sf[0] = lift * kin.kj[0] + drag * kin.v[0]; sf[1] = lift * kin.kj[1] + drag * kin.v[1]; sf[2] = lift * kin.kj[2] + drag * kin.v[2];
-        const off = (sec.xcp - 0.25) * f.chord;
+        if (!sys.active[el]) { sf[0] = sf[1] = sf[2] = fl[0] = fl[1] = fl[2] = 0; f.alpha[i] = 0; f.cl[i] = 0; f.fs[i] = 1; continue; }
+        sf[0] = set.force[k]; sf[1] = set.force[k + 1]; sf[2] = set.force[k + 2];
+        fl[0] = set.vcp[k]; fl[1] = set.vcp[k + 1]; fl[2] = set.vcp[k + 2];
+        const off = (set.xcp[el] - 0.25) * f.chord;
         at[0] = f.x + f.cdir[0] * off; at[2] = f.cdir[2] * off;
-        f.alpha[i] = kin.alpha; f.cl[i] = sec.cl;
+        f.alpha[i] = set.alpha[el]; f.cl[i] = set.cl[el];
         latF += sf[2]; latX += sf[2] * at[0]; latY += sf[2] * y;
         this.toWorldPoint(at, p);
         this.toWorldDir(sf, fw);
@@ -1077,15 +1092,57 @@ export class Boat {
   }
 
   /**
-   * Sails. Pass 1 works out where every strip is and the apparent wind it would see alone; the vortex
-   * system then adds what the rest of the rig induces there, and pass 2 turns that into section forces,
-   * swings each sail about its luff against its sheet, and hands the loads to the hull.
+   * How much the air at a body-frame point is slowed by the wake of a separated sail upwind of it
+   * (0 = clean air). A stalled sail leaves a wake as wide as itself that spreads and fills in downstream
+   * (plane turbulent wake: width ∝ √x, deficit ∝ 1/√x, momentum deficit = the sail's separation drag).
+   * This is what blankets the jib behind a squared-out main, and why you goose-wing on a run.
+   * `skip` leaves one sail out (a sail is not in its own wake). Writes the wake's direction to `dir`.
+   */
+  airShadow(px: number, py: number, pz: number, skip: SailRuntime | null, dir: number[]): number {
+    let worst = 0;
+    for (const B of this.sails) {
+      if (B === skip || !B.flying) continue;
+      const p0 = B.def.p0, ax = B.axis;
+      const rx0 = px - p0[0], ry0 = py - p0[1], rz0 = pz - p0[2];
+      const u = (rx0 * ax[0] + ry0 * ax[1] + rz0 * ax[2]) / B.luffLen;
+      if (u < -0.04 || u > 1.04) continue;
+      const j = B.stripIndex(u < 0 ? 0 : u > 1 ? 1 : u);
+      const D = B.wakeD[j];
+      if (D < 0.03) continue;
+      const st = B.strips[j], c = B.cdir[j], fl = B.flow[j];
+      const fl2 = Math.hypot(fl[0], fl[1], fl[2]);
+      if (fl2 < 0.3) continue;
+      const dx = fl[0] / fl2, dy = fl[1] / fl2, dz = fl[2] / fl2;
+      // from the middle of the sail's chord, at this height
+      const h = u * B.luffLen;
+      const rx = rx0 - ax[0] * h - c[0] * st.chord * 0.5, ry = ry0 - ax[1] * h - c[1] * st.chord * 0.5, rz = rz0 - ax[2] * h - c[2] * st.chord * 0.5;
+      const x = rx * dx + ry * dy + rz * dz;
+      if (x < 0.25 * st.chord) continue; // not behind it
+      const y2 = rx * rx + ry * ry + rz * rz - x * x;
+      const xe = x + D;
+      const spread = 0.325 * xe * D; // (0.57·√(x·D))²
+      const b0 = B.wakeB0[j];
+      const b2 = b0 * b0 + spread;
+      if (y2 >= b2) continue;
+      // centreline deficit of the similarity wake, thinned out for the width the sail gave it at the start
+      const uc = Math.min(0.7, 0.98 * Math.sqrt(D / xe) * Math.sqrt(spread / b2) * 1.0);
+      const e = 1 - Math.pow(y2 / b2, 0.75);
+      const def = uc * e * e;
+      if (def > worst) { worst = def; dir[0] = dx; dir[1] = dy; dir[2] = dz; }
+    }
+    return worst;
+  }
+
+  /**
+   * Sails. Pass 1 works out where every strip is and the apparent wind it would see alone (less any
+   * blanketing by a stalled sail upwind); the lifting set then solves all strips together, and pass 2
+   * swings each sail about its luff against its sheet and hands the loads to the hull.
    */
   private solveSails(dt: number, t: number, env: Environment, amp: number) {
-    const sys = this.aero, rhoA = env.rhoAir, rhoW = env.rhoWater, A = this.acc;
+    const sys = this.aero, set = this.airSet, rhoA = env.rhoAir, rhoW = env.rhoWater, A = this.acc;
     const p = [0, 0, 0], v = [0, 0, 0], vb = [0, 0, 0], tmp = [0, 0, 0], fw = [0, 0, 0], nb = [0, 0, 0];
-    const ind = [0, 0, 0], V = [0, 0, 0], kp = [0, 0, 0], rB = [0, 0, 0], camber = [0, 0, 0];
-    const wv = this.w3, kin = this.kin, sec = this.sec;
+    const kp = [0, 0, 0], rB = [0, 0, 0], wd = [0, 0, 0];
+    const wv = this.w3;
     const nodeA: V3 = [0, 0, 0], nodeB: V3 = [0, 0, 0], cd: V3 = [0, 0, 0];
     // mirror plane: the sea under the rig, in the boat's frame
     const eta0 = env.waves.elevation(this.pos.x, this.pos.z, t);
@@ -1096,13 +1153,13 @@ export class Boat {
     for (const sail of this.sails) {
       const isGen = sail.def.name === 'gennaker';
       const scale = isGen ? this.genHoist : 1;
-      const n = sail.strips.length;
+      const n = sail.n;
       sail.flying = !(isGen && scale < 0.02);
       sail.cImp = 0;
       sail.submerged = 0;
       if (!sail.flying) {
         sail.angle = this.main.angle; sail.rate = 0;
-        for (let i = 0; i < n; i++) { sys.active[sail.idx0 + i] = 0; sys.gamma[sail.idx0 + i] = 0; }
+        for (let i = 0; i < n; i++) { sys.active[sail.idx0 + i] = 0; sys.gamma[sail.idx0 + i] = 0; sail.wakeD[i] = 0; sail.shadow[i] = 0; }
         continue;
       }
       const ax = sail.axis, p0 = sail.def.p0, p1 = sail.def.p1;
@@ -1114,12 +1171,19 @@ export class Boat {
       for (let i = 0; i < n; i++) {
         const st = sail.strips[i], el = sail.idx0 + i, k = 3 * el;
         const cdir = sail.chordDir(st.u, sail.cdir[i]);
-        node(i / n, nodeA); node((i + 1) / n, nodeB);
+        node(sail.edges[i], nodeA); node(sail.edges[i + 1], nodeB);
+        const ds = sail.luffLen * st.du;
         sys.a[k] = nodeA[0]; sys.a[k + 1] = nodeA[1]; sys.a[k + 2] = nodeA[2];
         sys.b[k] = nodeB[0]; sys.b[k + 1] = nodeB[1]; sys.b[k + 2] = nodeB[2];
+        // bound vortex at quarter chord, control point at three-quarter chord
+        for (let q = 0; q < 3; q++) { sys.bp[k + q] = st.p[q] + cdir[q] * st.chord * 0.25; sys.cp[k + q] = st.p[q] + cdir[q] * st.chord * 0.75; }
         sys.chordDir[k] = cdir[0]; sys.chordDir[k + 1] = cdir[1]; sys.chordDir[k + 2] = cdir[2];
         sys.chord[el] = st.chord;
-        sys.core2[el] = (0.2 * (sail.luffLen / n)) ** 2;
+        sys.core2[el] = (0.2 * ds) ** 2;
+        set.span[k] = ax[0]; set.span[k + 1] = ax[1]; set.span[k + 2] = ax[2];
+        const cs = cdir[0] * ax[0] + cdir[1] * ax[1] + cdir[2] * ax[2];
+        set.chordP[el] = st.chord * Math.sqrt(Math.max(1 - cs * cs, 0.01));
+        set.ds[el] = ds;
         // the point the strip's force acts at, and how fast that point is moving
         const arm = st.chord * sail.xcp[i];
         kp[0] = st.p[0] + cdir[0] * arm; kp[1] = st.p[1] + cdir[1] * arm; kp[2] = st.p[2] + cdir[2] * arm;
@@ -1141,7 +1205,7 @@ export class Boat {
         const fwB = sail.fwB[i];
         fwB[0] = fwB[1] = fwB[2] = 0;
         if (wet > 0) {
-          sail.submerged += wet / n;
+          sail.submerged += wet * st.du;
           tmp[0] = v[0] - wv[0]; tmp[1] = v[1] - wv[1]; tmp[2] = v[2] - wv[2];
           this.toBodyDir(tmp, vb);
           cross(cdir, ax, nb);
@@ -1164,7 +1228,8 @@ export class Boat {
           fi[0] -= relB[0]; fi[1] -= relB[1]; fi[2] -= relB[2];
         } else fi[0] = fi[1] = fi[2] = 0;
         sys.active[el] = wet < 0.5 ? 1 : 0;
-        if (!sys.active[el]) sys.gamma[el] = 0;
+        const live = sys.active[el] ? scale * (1 - wet) : 0;
+        set.live[el] = live; set.area[el] = st.area * live;
       }
       // trailing legs leave each node along the local apparent wind (node j sits below strip j)
       for (let j = 0; j <= n; j++) {
@@ -1176,15 +1241,41 @@ export class Boat {
         if (j > 0) { const k = 3 * (sail.idx0 + j - 1); sys.db[k] = dx; sys.db[k + 1] = dy; sys.db[k + 2] = dz; }
       }
     }
-    if (this.stepCount % 2 === 0) sys.buildInfluence();
+    // blanketing: a strip in the wake of a stalled sail upwind gets slower air
+    for (const sail of this.sails) {
+      if (!sail.flying) continue;
+      for (let i = 0; i < sail.n; i++) {
+        const k = 3 * (sail.idx0 + i), fi = sail.flowInf[i];
+        const def = this.airShadow(sys.bp[k], sys.bp[k + 1], sys.bp[k + 2], sail, wd);
+        sail.shadow[i] += (def - sail.shadow[i]) * Math.min(1, dt / 0.15);
+        const d = sail.shadow[i];
+        if (d > 1e-3) {
+          const along = fi[0] * wd[0] + fi[1] * wd[1] + fi[2] * wd[2];
+          fi[0] -= d * along * wd[0]; fi[1] -= d * along * wd[1]; fi[2] -= d * along * wd[2];
+        }
+        set.vinf[k] = fi[0]; set.vinf[k + 1] = fi[1]; set.vinf[k + 2] = fi[2];
+      }
+    }
+    if (this.stepCount % this.fid.aeroEvery === 0 || this.stepCount < 3) sys.buildInfluence();
 
-    // ---- pass 2: section forces, sail swing, loads into the hull ----
+    // ---- all strips of all sails solved together ----
+    const sails = this.sails, jib0 = sails[1].idx0, gen0 = sails[2].idx0;
+    set.solve(dt, rhoA, (el, alpha, side, speed, out, probe) => {
+      const sail = el < jib0 ? sails[0] : el < gen0 ? sails[1] : sails[2], i = el - sail.idx0;
+      // camber bulges towards the side the clew has swung to; the wind on the other face is "backed"
+      const backed = side * (sail.angle >= 0 ? 1 : -1) > 0;
+      sailSection(alpha, backed, sail.shapeOf(i), out, sail.fs[i]);
+      // dynamic stall: separation is quick to spread, slow to re-attach
+      if (!probe) sail.fs[i] += (out.fs - sail.fs[i]) * (1 - Math.exp((-dt * Math.max(speed / set.chordP[el], 1.5)) / (out.fs < sail.fs[i] ? 3 : 6)));
+    });
+
+    // ---- pass 2: loads into the hull, sail swing ----
     const gBody = [0, 0, 0];
     this.toBodyDir([0, -G, 0], gBody);
     for (const sail of this.sails) {
       const isGen = sail.def.name === 'gennaker';
       const scale = isGen ? this.genHoist : 1;
-      const n = sail.strips.length;
+      const n = sail.n;
       const acc = sail.def.name === 'main' ? A.main : isGen ? A.gennaker : A.jib;
       sail.force = [0, 0, 0];
       if (!sail.flying) {
@@ -1193,43 +1284,29 @@ export class Boat {
         continue;
       }
       const ax = sail.axis;
-      const dsLuff = (sail.luffLen / n);
-      const cs = sail.angle >= 0 ? 1 : -1;
       let torque = 0;
       let cImplicit = sail.cImp; // N·m·s/rad, integrated implicitly
       for (let i = 0; i < n; i++) {
-        const st = sail.strips[i], el = sail.idx0 + i;
-        const cdir = sail.cdir[i], wet = sail.wet[i], fi = sail.flowInf[i];
+        const st = sail.strips[i], el = sail.idx0 + i, k = 3 * el;
+        const cdir = sail.cdir[i], fi = sail.flowInf[i];
         const sf = sail.stripForce[i], at = sail.stripAt[i], fl = sail.flow[i];
         const fwB = sail.fwB[i];
         sf[0] = fwB[0]; sf[1] = fwB[1]; sf[2] = fwB[2];
         fl[0] = fi[0]; fl[1] = fi[1]; fl[2] = fi[2];
         let xcp = sail.xcp[i];
-        if (wet < 1) {
-          sys.inducedAt(el, ind);
-          V[0] = fi[0] + ind[0]; V[1] = fi[1] + ind[1]; V[2] = fi[2] + ind[2];
-          if (stripKin(V, ax, cdir, kin)) {
-            fl[0] = V[0]; fl[1] = V[1]; fl[2] = V[2];
-            // camber bulges towards the side the clew has swung to; the wind on the other face is "backed"
-            cross(ax, cdir, camber);
-            const backed = (kin.un >= 0 ? 1 : -1) * cs * (kin.n[0] * camber[0] + kin.n[1] * camber[1] + kin.n[2] * camber[2]) < 0;
-            sailSection(kin.alpha, backed, sail.shapeOf(i), sec, sail.fs[i]);
-            const sp = kin.speed;
-            const chordP = st.chord * kin.cperp;
-            const rate = Math.max(sp / chordP, 1.5);
-            // dynamic stall: separation is quick to spread, slow to re-attach
-            sail.fs[i] += (sec.fs - sail.fs[i]) * (1 - Math.exp((-dt * rate) / (sec.fs < sail.fs[i] ? 3 : 6)));
-            const live = scale * (1 - wet);
-            const gT = sys.active[el] ? kin.gsign * 0.5 * sp * chordP * sec.cl * live : 0;
-            sys.gamma[el] += (gT - sys.gamma[el]) * (1 - Math.exp((-dt * rate) / 2));
-            const lift = rhoA * sys.gamma[el] * sp * dsLuff;
-            const drag = 0.5 * rhoA * sp * sp * st.area * live * sec.cd;
-            sf[0] += lift * kin.kj[0] + drag * kin.v[0]; sf[1] += lift * kin.kj[1] + drag * kin.v[1]; sf[2] += lift * kin.kj[2] + drag * kin.v[2];
-            xcp = sec.xcp;
-            sail.alpha[i] = kin.alpha; sail.cl[i] = sec.cl; sail.cd[i] = sec.cd; sail.luff[i] = sec.luff;
-            if (i === sail.mid) sail.qMean += (0.5 * rhoA * sp * sp - sail.qMean) * Math.min(1, dt / 0.4);
-          }
-        }
+        if (sys.active[el]) {
+          sf[0] += set.force[k]; sf[1] += set.force[k + 1]; sf[2] += set.force[k + 2];
+          fl[0] = set.vcp[k]; fl[1] = set.vcp[k + 1]; fl[2] = set.vcp[k + 2];
+          xcp = set.xcp[el];
+          // (negative = the wind is on the wrong side of the cloth: backed)
+          sail.alpha[i] = set.alpha[el] * (set.side[el] * (sail.angle >= 0 ? 1 : -1) > 0 ? -1 : 1);
+          sail.cl[i] = set.cl[el]; sail.cd[i] = set.cd[el]; sail.luff[i] = set.luff[el];
+          // what this strip leaves behind it for the sails downwind: only separated flow makes a wake worth the name
+          const f = sail.depths[i];
+          sail.wakeD[i] = Math.max(0, set.cd[el] - sail.def.cd0 - 0.6 * f * f - 0.03) * set.chordP[el] * set.live[el];
+          sail.wakeB0[i] = 0.5 * set.chordP[el] * Math.abs(Math.sin(set.alpha[el]));
+          if (i === sail.mid) { const sp = set.speed[el]; sail.qMean += (0.5 * rhoA * sp * sp - sail.qMean) * Math.min(1, dt / 0.4); }
+        } else { sail.wakeD[i] = 0; sail.alpha[i] = 0; sail.cl[i] = 0; }
         sail.xcp[i] += (xcp - sail.xcp[i]) * Math.min(1, dt / 0.1);
         const arm = st.chord * sail.xcp[i];
         rB[0] = cdir[0] * arm; rB[1] = cdir[1] * arm; rB[2] = cdir[2] * arm;
@@ -1251,11 +1328,12 @@ export class Boat {
       cross(cd15, [gBody[0] * sm, gBody[1] * sm, gBody[2] * sm], tmp);
       torque += tmp[0] * ax[0] + tmp[1] * ax[1] + tmp[2] * ax[2];
 
-      // sheet (one-sided rope) + hard stop, then integrate the swing
+      // sheet (one-sided rope) + hard stop, then integrate the swing. The sail swings a lot more than its
+      // own weight: the air on both sides has to move with it.
       const lim = sail.sheetLimit;
       const a = Math.abs(sail.angle);
       const sg = Math.sign(sail.angle) || 1;
-      const I = sail.def.inertia * (isGen ? Math.max(scale, 0.3) : 1);
+      const I = sail.def.inertia * (isGen ? Math.max(scale, 0.3) : 1) + sail.airMass(rhoA, scale).iLuff;
       cImplicit += 2;
       let sheetTorque = 0;
       if (a > lim) {
@@ -1280,7 +1358,7 @@ export class Boat {
    * gives a full 6×6 mass matrix plus the momentum-turning terms, of which the best known is the Munk
    * moment: a hull sliding sideways wants to turn broadside-on. Returns that yaw moment (N·m, body y).
    */
-  private integrate(dt: number, waterVel: V3, cbBody: V3, mDisp: number, rhoW: number, bSpan: number, bTop: number): number {
+  private integrate(dt: number, waterVel: V3, cbBody: V3, mDisp: number, rhoW: number, rhoA: number, bSpan: number, bTop: number): number {
     const M = this.M6, b = this.b6;
     M.fill(0);
     const m = this.mass;
@@ -1310,6 +1388,24 @@ export class Boat {
       { r: [RIG.board.x - cg.x, bTop - bSpan / 2 - cg.y, -cg.z], A: brdA, Ac: brdA, munk: 0 },
       { r: [RIG.rudder.x - cg.x, RUDDER_TOP_Y - RIG.rudder.span / 2 - cg.y, -cg.z], A: rudA, Ac: rudA, munk: 0 },
     ];
+    // The sails drag air with them too. It is light, but it sits a long way up: it adds about a fifth
+    // to the roll inertia, which is part of why a dinghy under sail rolls slower than one with a bare pole.
+    const none = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (const sl of this.sails) {
+      if (!sl.flying) continue;
+      const am = sl.airMass(rhoA, sl.def.name === 'gennaker' ? this.genHoist : 1).m / 2;
+      for (const fr of [0.25, 0.75]) {
+        const i = sl.stripIndex(fr), st = sl.strips[i], c = sl.cdir[i], ax = sl.axis;
+        let nx = c[1] * ax[2] - c[2] * ax[1], ny = c[2] * ax[0] - c[0] * ax[2], nz = c[0] * ax[1] - c[1] * ax[0];
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        nx /= nl; ny /= nl; nz /= nl;
+        els.push({
+          r: [st.p[0] + c[0] * st.chord * 0.5 - cg.x, st.p[1] + c[1] * st.chord * 0.5 - cg.y, st.p[2] + c[2] * st.chord * 0.5 - cg.z],
+          A: [am * nx * nx, am * nx * ny, am * nx * nz, am * ny * nx, am * ny * ny, am * ny * nz, am * nz * nx, am * nz * ny, am * nz * nz],
+          Ac: none, munk: 0,
+        });
+      }
+    }
     // rotational added inertia of the hull (roll, yaw, pitch about body x, y, z)
     const aRot = [0.15 * mDisp * 0.25, 0.4 * mDisp * (L / 4) ** 2 * 0.6, HEAVE_ADDED * mDisp * (L / 4) ** 2 * 0.6];
     const I = this.inertia.elements; // column-major, symmetric
@@ -1423,7 +1519,7 @@ export class Boat {
     let aL = 0, xL = 0;
     for (const cell of this.cells) {
       const p = world([cell.x, cell.y, cell.z]);
-      if (p[1] < 0) { const a = (2 * cell.hx * 2 * cell.hy) / CELL_GRID.nz; aL += a; xL += a * cell.x; }
+      if (p[1] < 0) { const a = (2 * cell.hx * 2 * cell.hy) / this.grid.nz; aL += a; xL += a * cell.x; }
     }
     const aB = RIG.board.chord * bSpan, aR = RIG.rudder.chord * RIG.rudder.span;
     aL += aB + aR; xL += aB * RIG.board.x + aR * RIG.rudder.x;

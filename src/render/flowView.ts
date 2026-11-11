@@ -58,8 +58,7 @@ function sailLocal(s: SailRuntime, px: number, py: number, pz: number, hit: Sail
   const h = rx * ax[0] + ry * ax[1] + rz * ax[2];
   const u = h / s.luffLen;
   if (u < -0.03 || u > 1.03) return false;
-  const n = s.strips.length;
-  const i = Math.min(n - 1, Math.max(0, Math.floor(u * n)));
+  const i = s.stripIndex(Math.min(Math.max(u, 0), 1));
   const c = s.cdir[i], chord = s.chordAt(Math.min(Math.max(u, 0), 1));
   // offset from the luff at this height
   const ox = rx - ax[0] * h, oy = ry - ax[1] * h, oz = rz - ax[2] * h;
@@ -316,9 +315,9 @@ export class FlowView {
     const p: V3 = [0, 0, 0], d: V3 = [0, 0, 0];
     for (const s of b.sails) {
       if (!s.flying || (s.def.name === 'gennaker' && b.genHoist < 0.9)) continue;
-      const n = s.strips.length, ax = s.axis, cs = s.angle >= 0 ? 1 : -1;
+      const ax = s.axis, cs = s.angle >= 0 ? 1 : -1;
       for (const fr of [0.25, 0.5, 0.75]) {
-        const i = Math.min(n - 1, Math.floor(fr * n));
+        const i = s.stripIndex(fr);
         const st = s.strips[i], c = s.cdir[i];
         let nx = (ax[1] * c[2] - ax[2] * c[1]) * cs, ny = (ax[2] * c[0] - ax[0] * c[2]) * cs, nz = (ax[0] * c[1] - ax[1] * c[0]) * cs;
         const nl = Math.hypot(nx, ny, nz) || 1;

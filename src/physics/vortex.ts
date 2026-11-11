@@ -66,8 +66,17 @@ export class VortexSystem {
   /** Mirror plane: point and unit normal. */
   planeP: [number, number, number] = [0, 0, 0];
   planeN: [number, number, number] = [0, 1, 0];
-  /** Influence coefficients: velocity at control point i per unit Γ of element j. */
-  W: Float64Array;
+  /**
+   * Control points (where the flow is sampled to get each strip's angle of attack) and bound points
+   * (the middle of each bound vortex, where the Kutta–Joukowski force is taken). By default both sit
+   * mid-way along the bound vortex: Prandtl's classical lifting line. Set `autoPoints = false` and fill
+   * them yourself to put the control points at 3/4 chord (Weissinger's extended lifting line, right for
+   * low aspect ratios, swept lines and closely coupled sails).
+   */
+  cp: Float64Array; bp: Float64Array;
+  autoPoints = true;
+  /** Influence coefficients: velocity at control point i (W) and at bound point i (Wb) per unit Γ of element j. */
+  W: Float64Array; Wb: Float64Array;
   private tmp = new Float64Array(3);
 
   constructor(public n: number) {
@@ -76,7 +85,8 @@ export class VortexSystem {
     this.chordDir = new Float64Array(3 * n); this.chord = new Float64Array(n);
     this.gamma = new Float64Array(n); this.kappa = new Float64Array(n);
     this.core2 = new Float64Array(n).fill(0.01); this.active = new Uint8Array(n).fill(1);
-    this.W = new Float64Array(3 * n * n);
+    this.cp = new Float64Array(3 * n); this.bp = new Float64Array(3 * n);
+    this.W = new Float64Array(3 * n * n); this.Wb = new Float64Array(3 * n * n);
   }
 
   /** Unit-circulation horseshoe j (no mirror) at point p, added to out. `spread` > 1 spreads the bound part along the chord. */
@@ -115,25 +125,34 @@ export class VortexSystem {
     out[0] += t[0] - 2 * vn * n[0]; out[1] += t[1] - 2 * vn * n[1]; out[2] += t[2] - 2 * vn * n[2];
   }
 
-  /** Rebuild the influence matrix from the current geometry. Control points sit mid-way along each bound vortex. */
+  /** Rebuild the influence matrices from the current geometry. */
   buildInfluence(): void {
-    const n = this.n, W = this.W, a = this.a, b = this.b;
+    const n = this.n, W = this.W, Wb = this.Wb, a = this.a, b = this.b, cp = this.cp, bp = this.bp;
     const v = [0, 0, 0];
+    if (this.autoPoints) {
+      for (let k = 0; k < 3 * n; k++) cp[k] = bp[k] = (a[k] + b[k]) / 2;
+    }
+    const same = this.autoPoints;
     for (let i = 0; i < n; i++) {
-      const cx = (a[3 * i] + b[3 * i]) / 2, cy = (a[3 * i + 1] + b[3 * i + 1]) / 2, cz = (a[3 * i + 2] + b[3 * i + 2]) / 2;
+      const i3 = 3 * i;
       for (let j = 0; j < n; j++) {
         const k = 3 * (i * n + j);
-        if (!this.active[j] || !this.active[i]) { W[k] = W[k + 1] = W[k + 2] = 0; continue; }
+        if (!this.active[j] || !this.active[i]) { W[k] = W[k + 1] = W[k + 2] = Wb[k] = Wb[k + 1] = Wb[k + 2] = 0; continue; }
         v[0] = v[1] = v[2] = 0;
-        this.element(j, cx, cy, cz, v, 1, 1);
+        this.element(j, cp[i3], cp[i3 + 1], cp[i3 + 2], v, 1, 1);
         W[k] = v[0]; W[k + 1] = v[1]; W[k + 2] = v[2];
+        if (!same) { v[0] = v[1] = v[2] = 0; this.element(j, bp[i3], bp[i3 + 1], bp[i3 + 2], v, 1, 1); }
+        Wb[k] = v[0]; Wb[k + 1] = v[1]; Wb[k + 2] = v[2];
       }
     }
   }
 
   /** Velocity induced at control point i by the whole system (current Γ). */
-  inducedAt(i: number, out: Float64Array | number[]): void {
-    const n = this.n, W = this.W, g = this.gamma;
+  inducedAt(i: number, out: Float64Array | number[]): void { this.dot(this.W, i, out); }
+  /** Velocity induced at bound point i (the one that tilts the lift vector: induced drag). */
+  inducedAtBound(i: number, out: Float64Array | number[]): void { this.dot(this.Wb, i, out); }
+  private dot(W: Float64Array, i: number, out: Float64Array | number[]): void {
+    const n = this.n, g = this.gamma;
     let x = 0, y = 0, z = 0;
     for (let j = 0, k = 3 * i * n; j < n; j++, k += 3) {
       const gj = g[j];
@@ -165,3 +184,38 @@ export class VortexSystem {
 
 const SPREAD_X = [0.08, 0.3, 0.68];
 const SPREAD_W = [0.45, 0.35, 0.2];
+
+/** Solve the dense n×n system A·x = b in place (row-major A, partial pivoting). Returns false if singular. */
+export function solveDense(A: Float64Array, b: Float64Array, n: number): boolean {
+  for (let c = 0; c < n; c++) {
+    let piv = c, best = Math.abs(A[c * n + c]);
+    for (let r = c + 1; r < n; r++) { const v = Math.abs(A[r * n + c]); if (v > best) { best = v; piv = r; } }
+    if (best < 1e-12) return false;
+    if (piv !== c) {
+      for (let k = c; k < n; k++) { const t = A[c * n + k]; A[c * n + k] = A[piv * n + k]; A[piv * n + k] = t; }
+      const t = b[c]; b[c] = b[piv]; b[piv] = t;
+    }
+    const d = 1 / A[c * n + c];
+    for (let r = c + 1; r < n; r++) {
+      const f = A[r * n + c] * d;
+      if (f === 0) continue;
+      const rn = r * n, cn = c * n;
+      for (let k = c + 1; k < n; k++) A[rn + k] -= f * A[cn + k];
+      b[r] -= f * b[c];
+    }
+  }
+  for (let r = n - 1; r >= 0; r--) {
+    let sum = b[r];
+    const rn = r * n;
+    for (let k = r + 1; k < n; k++) sum -= A[rn + k] * b[k];
+    b[r] = sum / A[rn + r];
+  }
+  return true;
+}
+
+/**
+ * Wagner's indicial lift, in R.T. Jones's two-exponential form. A step change in the downwash at 3/4
+ * chord gives half its lift at once and the rest over the next several chord lengths of travel, as the
+ * shed vortex is left behind: φ(s) = 1 − 0.165·e^(−0.0455 s) − 0.335·e^(−0.3 s), s in half-chords.
+ */
+export const WAGNER = { A1: 0.165, b1: 0.0455, A2: 0.335, b2: 0.3 };
