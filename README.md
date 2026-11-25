@@ -149,6 +149,7 @@ All variables are also in the panel on the right. `window.sim` is exposed in the
 - Linear (Airy) waves, no wave breaking on the boat, no spray, no cockpit flooding, no righting procedure
   (R puts it upright, as if you'd done it).
 - The tide is a single harmonic with slack at HW/LW. Real harbours (Chichester included) are messier.
+- Other boats are in the works
 
 ## Layout
 
